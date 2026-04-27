@@ -1,0 +1,24 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: khyra_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: khyra
+      POSTGRES_PASSWORD: khyra_secret
+      POSTGRES_DB: khyra_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U khyra -d khyra_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
+    driver: local

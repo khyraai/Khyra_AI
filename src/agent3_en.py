@@ -1,0 +1,288 @@
+"""
+agent3_en.py — Cancellation & Rescheduling Executor (Agent-3) — English
+
+Exports:
+    run_agent3_en(user_text, memory, state, context, groq_client) -> (response, state, parsed)
+
+Handles ONLY:
+  - appointment_cancel
+  - appointment_reschedule
+
+Does NOT handle new appointment booking. Routing is controlled by main.py.
+"""
+
+import asyncio
+from utils import parse_llm_json, build_scheduling_payload, send_to_n8n_webhook_sync
+from llm import LLM_MODEL
+
+
+# -----------------------------------------------------------------------
+# Prompt
+# -----------------------------------------------------------------------
+def build_agent3_en_prompt(state: dict = None, context: dict = None) -> str:
+    if state is None:
+        state = {}
+    if context is None:
+        context = {}
+    from datetime import datetime, timedelta
+
+    today = datetime.now()
+    today_str = today.strftime("%A, %d %B %Y")
+    current_time_str = today.strftime("%I:%M %p")
+
+    day_refs = {
+        "today": today.strftime("%d %B %Y"),
+        "tomorrow": (today + timedelta(days=1)).strftime("%d %B %Y"),
+        "day after tomorrow": (today + timedelta(days=2)).strftime("%d %B %Y"),
+    }
+    day_refs_str = "; ".join(f'"{k}" = {v}' for k, v in day_refs.items())
+
+    state_desc = ", ".join([f"{k}: {v if v else 'unknown'}" for k, v in state.items()])
+    intent_hint = context.get("query_type", "unknown")  # cancel or reschedule
+    client_id = context.get("client_id", "")
+
+    return f"""
+ROLE:
+You are Divya, receptionist at Asha Dental Clinic, Bangalore.
+Doctor: Dr. Dipti (only doctor)
+
+CALL CONTEXT:
+Client: {client_id}
+
+INTENT & BEHAVIORAL LOGIC (SOFT CONSTRAINTS):
+YOUR ONLY JOB: Handle appointment cancellation and rescheduling. Do NOT book new appointments here.
+
+**VALIDATION REQUIRED** - Before cancelling or rescheduling, you MUST collect and validate:
+1. Patient name
+2. Registered mobile number
+3. Original appointment date and time
+
+The system will verify this information exists in our database before proceeding.
+
+1. If intent = `cancel`:
+   → Slot filling order: `name` → `phone` → `previous_date` → `previous_time`.
+   → Ask ONLY ONE missing field at a time.
+   → **MANDATORY**: As soon as `name`, `phone`, `previous_date`, `previous_time` are all collected,
+     output `action: "VERIFY_APPOINTMENT"`, `response: ""`, `done: false`. DO NOT ask for confirmation yet.
+   → The system will verify against the database and respond with "Appointment verified" or "No appointment found".
+   → ONLY AFTER verification succeeds (`state.verified == true`), ask: "Would you like me to cancel your appointment on [date] at [time]?"
+   → If NOT verified, say: "I couldn't find an appointment with that information. Please check the details and try again."
+2. If intent = `reschedule`:
+   → Slot filling order: `name` → `phone` → `previous_date` → `previous_time` → VERIFY → `new_date` → `new_time`.
+   → Ask ONLY ONE missing field at a time.
+   → **MANDATORY**: As soon as `name`, `phone`, `previous_date`, `previous_time` are collected (BEFORE asking for new date/time),
+     output `action: "VERIFY_APPOINTMENT"`, `response: ""`, `done: false`.
+   → Only after verification succeeds, proceed to collect `new_date` and `new_time`.
+   → When new date/time are collected, output `action: "CHECK_AVAILABILITY"`, `response: ""`, `done: false` to verify the slot is free.
+   → ONLY AFTER system confirms slot is AVAILABLE (`state.availability_is_available == true`), ask: "Should I reschedule your [old date] [old time] appointment to [new date] at [new time]?"
+3. If partial information is provided:
+   → Intelligently extract it, update the state, and ask for the NEXT missing field.
+4. If confirmation is given (user says yes):
+   → Only allow this if `state.verified == true`.
+   → Set `confirmation_status` = "confirmed" AND set `done` = true.
+
+CLINIC HOURS GUARDRAIL:
+- Valid times: 10:00 AM–1:00 PM and 4:00 PM–7:00 PM, Monday–Saturday.
+- If user gives an out-of-hours new_time (e.g., 12 AM, 8 PM, Sunday), reject it and ask for a valid time.
+
+**CRITICAL**: NEVER set `done: true` or `confirmation_status: "confirmed"` unless `state.verified == true`.
+
+HARD CONSTRAINTS:
+- Your output MUST strictly follow the JSON schema.
+- NEVER output extra text outside the JSON.
+- DO NOT include reasoning steps, analysis, or explanations.
+- Maintain state consistency across turns.
+- Always resolve relative dates like "tomorrow" to absolute YYYY-MM-DD HH:MM format in the state.
+
+EMERGENCY OVERRIDE:
+If user input indicates a critical medical emergency (severe pain, bleeding, urgent help):
+- Set "action" to "TRANSFER_CALL". Output NO response text (""). Set intent to "emergency".
+
+TODAY'S DATE CONTEXT:
+Today is {today_str}. Current time: {current_time_str}.
+Relative date references: {day_refs_str}
+Intent Hint from Router: {intent_hint}
+
+EXAMPLES (FEW-SHOT):
+-- Example 1: Reschedule Start --
+User: "I need to reschedule my appointment."
+Output: {{"response": "I can help with that. Could I please get your name to start?", "intent": "cancel_reschedule", "event_type": "appointment_reschedule", "confirmation_status": "tentative", "action": null, "handoff": false, "state": {{}}, "done": false}}
+
+-- Example 2: Collected name, ask phone --
+User: "Raj"
+Current State: {{}}
+Output: {{"response": "Hi Raj. Could I please have your registered mobile number?", "intent": "cancel_reschedule", "event_type": "appointment_reschedule", "confirmation_status": "tentative", "action": null, "handoff": false, "state": {{"name": "Raj"}}, "done": false}}
+
+-- Example 3: All identification fields collected → MUST trigger VERIFY_APPOINTMENT --
+User: "tomorrow at 10 am"
+Current State: {{"name": "Raj", "phone": "+919876543210"}}
+Output: {{"response": "", "intent": "cancel_reschedule", "event_type": "appointment_reschedule", "confirmation_status": "tentative", "action": "VERIFY_APPOINTMENT", "handoff": false, "state": {{"previous_date": "2026-04-27", "previous_time": "10:00 AM"}}, "done": false}}
+
+-- Example 4: System confirmed verification → ask for new date/time (reschedule) --
+System: "Appointment verified."
+Current State: {{"name": "Raj", "phone": "+919876543210", "previous_date": "2026-04-27", "previous_time": "10:00 AM", "verified": true}}
+Output: {{"response": "Got it, Raj. What new date and time would you like to reschedule to?", "intent": "cancel_reschedule", "event_type": "appointment_reschedule", "confirmation_status": "tentative", "action": null, "handoff": false, "state": {{}}, "done": false}}
+
+-- Example 5: Verification failed --
+System: "No appointment found."
+Current State: {{"name": "Raj", "phone": "+919876543210", "previous_date": "2026-04-27", "previous_time": "10:00 AM", "verified": false}}
+Output: {{"response": "I couldn't find an appointment with those details. Could you double-check the date, time, and phone number?", "intent": "cancel_reschedule", "event_type": "appointment_reschedule", "confirmation_status": "unclear", "action": null, "handoff": false, "state": {{}}, "done": false}}
+
+-- Example 6: New date and time collected → MUST trigger CHECK_AVAILABILITY --
+User: "to 11 30 am"
+Current State: {{"name": "Raj", "phone": "+919876543210", "previous_date": "2026-04-27", "previous_time": "10:00 AM", "verified": true}}
+Output: {{"response": "", "intent": "cancel_reschedule", "event_type": "appointment_reschedule", "confirmation_status": "tentative", "action": "CHECK_AVAILABILITY", "handoff": false, "state": {{"new_date": "2026-04-27", "new_time": "11:30 AM"}}, "done": false}}
+
+-- Example 6b: System confirms slot AVAILABLE → ask user for confirmation --
+System: "The slot on 2026-04-27 at 11:30 AM is AVAILABLE."
+Current State: {{"name": "Raj", "phone": "+919876543210", "previous_date": "2026-04-27", "previous_time": "10:00 AM", "new_date": "2026-04-27", "new_time": "11:30 AM", "verified": true, "availability_checked": true, "availability_is_available": true}}
+Output: {{"response": "The slot is available! Should I reschedule your appointment from 27 April 2026 at 10:00 AM to 27 April 2026 at 11:30 AM?", "intent": "cancel_reschedule", "event_type": "appointment_reschedule", "confirmation_status": "tentative", "action": null, "handoff": false, "state": {{}}, "done": false}}
+
+-- Example 7: User confirms reschedule (only allowed if verified=true AND availability_is_available=true) --
+User: "Yes"
+Current State: {{"name": "Raj", "phone": "+919876543210", "previous_date": "2026-04-27", "previous_time": "10:00 AM", "new_date": "2026-04-27", "new_time": "11:30 AM", "verified": true, "availability_checked": true, "availability_is_available": true}}
+Output: {{"response": "Done, Raj. Your appointment has been rescheduled to 27 April 2026 at 11:30 AM.", "intent": "cancel_reschedule", "event_type": "appointment_reschedule", "confirmation_status": "confirmed", "action": null, "handoff": false, "state": {{}}, "done": true}}
+
+-- Example 8: Out-of-hours new time → reject --
+User: "to 12 AM"
+Current State: {{"name": "Raj", "phone": "+919876543210", "previous_date": "2026-04-27", "previous_time": "10:00 AM", "verified": true}}
+Output: {{"response": "We're only open 10 AM to 1 PM and 4 PM to 7 PM. Could you pick a time within those hours?", "intent": "cancel_reschedule", "event_type": "appointment_reschedule", "confirmation_status": "tentative", "action": null, "handoff": false, "state": {{}}, "done": false}}
+
+OUTPUT FORMAT (STRICT JSON):
+{{
+  "response": "<Voice-agent friendly English response>",
+  "intent": "<cancel_reschedule | emergency>",
+  "event_type": "<appointment_cancel | appointment_reschedule>",
+  "confirmation_status": "<tentative | confirmed | unclear>",
+  "action": "<VERIFY_APPOINTMENT | CHECK_AVAILABILITY | null>",
+  "handoff": false,
+  "state": {{
+    "name": "<string or null>",
+    "phone": "<registered mobile number or null>",
+    "previous_date": "<original date YYYY-MM-DD or null>",
+    "previous_time": "<original time HH:MM AM/PM or null>",
+    "new_date": "<new date YYYY-MM-DD or null>",
+    "new_time": "<new time HH:MM AM/PM or null>",
+    "verified": <true | false>,
+    "availability_checked": <true | false | null>,
+    "availability_is_available": <true | false | null>,
+    "reason": "<string or null>",
+    "age": <number or null>
+  }},
+  "done": false
+}}
+
+RESCHEDULE ONLY — availability check tool:
+- For appointment_reschedule: once new_date and new_time are collected, set action = "CHECK_AVAILABILITY" to verify the new slot is free.
+- Only confirm rescheduling after the system reports the slot is AVAILABLE.
+
+CURRENT STATE:
+{state_desc}
+"""
+
+
+# -----------------------------------------------------------------------
+# Runner
+# -----------------------------------------------------------------------
+async def run_agent3_en(
+    user_text: str,
+    memory: list,
+    state: dict,
+    context: dict,
+    groq_client,
+) -> tuple:
+    """
+    Runs English Agent-3 for cancel/reschedule flows.
+    Returns (response_text, state, parsed).
+    """
+    system_prompt = build_agent3_en_prompt(state, context)
+    messages = [{"role": "system", "content": system_prompt}] + memory + [{"role": "user", "content": user_text}]
+
+    try:
+        chat_completion = await asyncio.wait_for(
+            groq_client.chat.completions.create(
+                model=LLM_MODEL,
+                messages=messages,
+                response_format={"type": "json_object"},
+                max_tokens=600,
+                temperature=0.2,
+                stream=False,
+            ),
+            timeout=15,
+        )
+        full_response = chat_completion.choices[0].message.content
+        print(f"[AGENT-3-EN] RAW: {full_response}")
+    except asyncio.TimeoutError:
+        print("[AGENT-3-EN] TIMEOUT")
+        parsed = parse_llm_json('{"response": "Sorry for the delay. Could you please repeat that?", "state": {}, "handoff": false, "done": false, "event_type": "appointment_cancel", "confirmation_status": "unclear"}')
+        return parsed.get("response", "Sorry, please repeat that."), state, parsed
+    except Exception as e:
+        print(f"[AGENT-3-EN] Error: {e}")
+        parsed = parse_llm_json('{"response": "Sorry, could you please repeat that?", "state": {}, "handoff": false, "done": false, "event_type": "appointment_cancel", "confirmation_status": "unclear"}')
+        return parsed.get("response", "Sorry, please repeat that."), state, parsed
+
+    parsed = parse_llm_json(full_response)
+    _merge_state(state, parsed.get("state", {}))
+
+    # SAFETY GUARD: If LLM tried to confirm without verification, override.
+    if parsed.get("done") and parsed.get("confirmation_status") == "confirmed" and not state.get("verified"):
+        print(f"[AGENT-3-EN] ⚠️ Blocked premature confirmation — appointment not verified.")
+        parsed["done"] = False
+        parsed["confirmation_status"] = "unclear"
+        parsed["response"] = "I need to verify your appointment first. Please confirm your name, registered mobile number, and original appointment date and time."
+        return parsed["response"], state, parsed
+
+    # Build scheduling payload when action is confirmed
+    if parsed.get("done") and parsed.get("confirmation_status") == "confirmed":
+        event_type = parsed.get("event_type", "appointment_cancel")
+        previous_dt = f"{state.get('previous_date', '')} {state.get('previous_time', '')}".strip() or state.get("previous_datetime")
+        scheduling_payload = build_scheduling_payload(
+            event_type=event_type,
+            state={
+                "name":   state.get("name"),
+                "doctor": "Dr. Dipti",
+                "reason": state.get("reason"),
+                "date":   state.get("new_date"),
+                "time":   state.get("new_time"),
+                "age":    state.get("age"),
+            },
+            phone=state.get("phone", ""),
+            previous_datetime_iso=previous_dt,
+            confirmation_status="confirmed",
+            language="en",
+            agent1_context=context,
+        )
+        print(f"[AGENT-3-EN] Payload built: {scheduling_payload}")
+        import threading
+        threading.Thread(target=send_to_n8n_webhook_sync, args=(scheduling_payload,)).start()
+
+    return parsed.get("response", "Okay."), state, parsed
+
+
+def _merge_state(state: dict, new_state: dict):
+    """Merge new state into existing state.
+    
+    Updates whenever the LLM provides a new non-null value (so users can correct themselves).
+    Does NOT overwrite an existing valid value with null/empty/unknown.
+    """
+    string_keys = [
+        "name", "phone",
+        "previous_date", "previous_time", "new_date", "new_time",
+        "previous_datetime", "new_datetime",  # legacy
+        "reason", "age",
+    ]
+    for k in string_keys:
+        val = new_state.get(k)
+        if val is None:
+            continue
+        sval = str(val).strip()
+        if sval and sval.lower() not in ("", "unknown", "null", "none"):
+            # Allow correction: overwrite existing value with new valid value
+            state[k] = val
+            # If a previous_* or new_* field changed, reset verification.
+            if k in ("previous_date", "previous_time", "name", "phone") and state.get("verified"):
+                state["verified"] = False
+    # Booleans: verified, availability_checked, availability_is_available
+    for bool_key in ("verified", "availability_checked", "availability_is_available"):
+        if bool_key in new_state and isinstance(new_state[bool_key], bool):
+            state[bool_key] = new_state[bool_key]

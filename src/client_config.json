@@ -1,0 +1,16 @@
+{
+  "+919187471874": {
+    "client_id": "deepti_dental",
+    "clinic_name": "Doctor Deepti's Dental and Orthodontic Centre",
+    "doctor_name": "Doctor Naga Deepti",
+    "doctor_qualifications": "MDS — Orthodontics and Dentofacial Orthopaedics",
+    "address": "Number 39, 3rd Cross, Dwarakanagar, Hoskerehalli, Bangalore",
+    "timings": "Monday to Saturday — 10:00 AM to 1:00 PM and 4:00 PM to 7:00 PM. Closed on Sunday.",
+    "doctor_mobile": "+91 9187471874",
+    "consultation_fee_min": 200,
+    "consultation_fee_max": 300,
+    "default_language": "kn",
+    "emergency_transfer_number": "+918660033297",
+    "connection_id": "deepti_dental"
+  }
+}
