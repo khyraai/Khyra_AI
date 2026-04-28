@@ -460,23 +460,24 @@ def _is_valid_clinic_slot(date_str: str, time_str: str):
     # ---- Sunday closed ---------------------------------------------------
     # Python: Monday=0 ... Sunday=6
     if date_obj.weekday() == 6:
-        return False, "The clinic is closed on Sundays. Please pick another day."
+        return False, "The centre is closed on Sundays. Please pick another day."
     
     # ---- Operating windows ----------------------------------------------
     minutes = time_obj.hour * 60 + time_obj.minute
     morning_ok = (10 * 60) <= minutes <= (12 * 60 + 59)   # 10:00â€“12:59
     evening_ok = (16 * 60) <= minutes <= (18 * 60 + 59)   # 16:00â€“18:59
-    
+
     if morning_ok or evening_ok:
         return True, ""
-    
+
     return False, (
-        "Our clinic hours are 10:00 AMâ€“1:00 PM and 4:00 PMâ€“7:00 PM. "
+        "Our centre hours are 10:00 AM–1:00 PM and 4:00 PM–7:00 PM. "
         "Please choose a time within those windows."
     )
 
+
 # =======================================================================
-# SHARED: State, Prompt, LLM, TTS helpers â€” now delegated to modules
+# SHARED: State, Prompt, LLM, TTS helpers — now delegated to modules
 # (see utils.py / agent1.py / agent2.py / stt.py / tts.py)
 # =======================================================================
 
@@ -974,7 +975,7 @@ async def vobiz_stream(websocket: WebSocket):
                 if not greeted and call_active:
                     greeted = True
                     try:
-                        welcome_text = "Hello, welcome to Doctor Deepti's Dental and Orthodontic Clinic. How may I assist you?"
+                        welcome_text = "Hello, welcome to Doctor Deepti's Dental and Orthodontic Centre. How may I assist you?"
                         tts_pcm = await cartesia_tts_collect(welcome_text, language="en")
                         if tts_pcm:
                             out_audio, _ = audioop.ratecv(tts_pcm, 2, 1, 16000, 8000, None)

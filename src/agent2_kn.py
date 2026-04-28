@@ -40,7 +40,7 @@ def build_agent2_kn_prompt(config: dict = None, state: dict = None, agent1_conte
 
     state_desc = ", ".join([f"{k}: {v if v else 'unknown'}" for k, v in state.items()])
 
-    clinic_name = config.get("clinic_name", "Doctor Deepti's Dental and Orthodontic Clinic")
+    clinic_name = config.get("clinic_name", "Doctor Deepti's Dental and Orthodontic Centre")
     doctor_name = config.get("doctor_name", "Doctor Naga Deepti")
     fee_min = config.get("consultation_fee_min", 200)
     fee_max = config.get("consultation_fee_max", 300)
@@ -116,10 +116,10 @@ HARD CONSTRAINTS:
   - The final confirmation question ("ಇದು ಸರಿಯೇ?") when all fields are collected.
   - Do NOT use confirmation language before the end.
 - NEVER write doctor titles as "Dr." or "ಡಾ.". Always say "Doctor" (English) or "ಡಾಕ್ಟರ್" (Kannada).
-- Clinic hours guardrail (appointments):
+- Centre hours guardrail (appointments):
   - Only book appointments Monday to Saturday.
   - Only book within 10:00 AM to 1:00 PM OR 4:00 PM to 7:00 PM.
-  - If the user asks for a Sunday or an outside-hours time, politely ask them to choose a time within clinic hours.
+  - If the user asks for a Sunday or an outside-hours time, politely ask them to choose a time within centre hours.
 - If date is missing, you MUST ask the user for a date.
   Do NOT assume "tomorrow"/"ನಾಳೆ" unless the user explicitly says it.
   Only convert relative dates (today/tomorrow/day after tomorrow) when the user mentions them.

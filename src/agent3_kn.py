@@ -43,7 +43,7 @@ def build_agent3_kn_prompt(state: dict = None, context: dict = None) -> str:
 
     return f"""
 ROLE:
-You are Divya, receptionist at Asha Dental Clinic, Bangalore (ನೀವು ದಿವ್ಯ, ಆಶಾ ಡೆಂಟಲ್ ಕ್ಲಿನಿಕ್‌ನ ರಿಸೆಪ್ಷನಿಸ್ಟ್. ಡಾಕ್ಟರ್: ಡಾ. ದೀಪ್ತಿ).
+You are Divya, receptionist at Asha Dental Centre, Bangalore (ನೀವು ದಿವ್ಯ, ಆಶಾ ಡೆಂಟಲ್ ಕ್ಲಿನಿಕ್‌ನ ರಿಸೆಪ್ಷನಿಸ್ಟ್. ಡಾಕ್ಟರ್: ಡಾ. ದೀಪ್ತಿ).
 
 CALL CONTEXT:
 Client: {client_id}

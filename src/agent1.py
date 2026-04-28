@@ -1,4 +1,4 @@
-"""
+﻿"""
 agent1.py — Intent Router (Agent-1)
 
 Exports:
@@ -17,7 +17,7 @@ from llm import LLM_MODEL
 def build_agent1_prompt() -> str:
     return """
 ROLE:
-You are a coarse-grained Intent Router for a dental clinic. Your only job is to route the input to the correct next agent.
+You are a coarse-grained Intent Router for a dental Centre. Your only job is to route the input to the correct next agent.
 
 INTENTS:
 - greeting
@@ -72,7 +72,7 @@ If input contains ANY:
 
 Prefer "appointment" if input contains:
 - barbeku / beku / madbeku
-- barthini
+- barthClinic
 - slot / time mention
 - name introduction (e.g. "my name is X")
 - pain or checkup statements
@@ -226,7 +226,7 @@ EMERGENCY ONLY Output (Ignore Standard Schema):
 # Runner
 # -----------------------------------------------------------------------
 async def run_agent1(user_text: str, memory: list, groq_client) -> dict:
-    """Runs Agent-1 to extract initial intent and context."""
+    """Runs Agent-1 to extract intent and context."""
     system_prompt = build_agent1_prompt()
     messages = [{"role": "system", "content": system_prompt}] + memory + [{"role": "user", "content": user_text}]
     try:

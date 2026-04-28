@@ -70,7 +70,7 @@ def build_agent2_en_prompt(config: dict = None, state: dict = None, agent1_conte
 
     state_desc = ", ".join([f"{k}: {v if v else 'unknown'}" for k, v in state.items()])
 
-    clinic_name = config.get("clinic_name", "Doctor Deepti's Dental and Orthodontic Clinic")
+    clinic_name = config.get("clinic_name", "Doctor Deepti's Dental and Orthodontic Centre")
     doctor_name = config.get("doctor_name", "Doctor Naga Deepti")
     fee_min = config.get("consultation_fee_min", 200)
     fee_max = config.get("consultation_fee_max", 300)
@@ -153,10 +153,10 @@ HARD CONSTRAINTS:
 - When speaking dates in the response, NEVER output ISO format like "2026-04-13".
   Always speak dates in a natural way like "Monday, 13 April 2026".
 - NEVER write doctor titles as "Dr.". Always say "Doctor".
-- Clinic hours guardrail (appointments):
+- Centre hours guardrail (appointments):
   - Only book appointments Monday to Saturday.
   - Only book within 10:00 AM to 1:00 PM OR 4:00 PM to 7:00 PM.
-  - If the user asks for a Sunday or an outside-hours time, politely ask them to choose a time within clinic hours.
+  - If the user asks for a Sunday or an outside-hours time, politely ask them to choose a time within centre hours.
 - NEVER confirm an appointment unless ALL required fields are known: name, age, reason, date, time.
 - Never use confirmation phrasing (example: "Just to confirm") while any required field is missing.
 - When all required fields are known (name, age, reason, date, time), you MUST:
