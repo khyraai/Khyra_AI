@@ -37,7 +37,7 @@ from stt import (
     pcm16_16k_to_mulaw_8k,
     pcm16_to_wav_bytes,
 )
-from tts import cartesia_tts_collect, cartesia_tts_stream
+from tts import cartesia_tts_collect, cartesia_tts_chunked, cartesia_tts_stream
 from database import check_availability, verify_appointment_for_cancellation, update_appointment_status, reschedule_appointment
 
 # -----------------------------
@@ -869,9 +869,30 @@ async def vobiz_stream(websocket: WebSocket):
                         response_text = "\u0C95\u0CCD\u0CB7\u0CAE\u0CBF\u0CB8\u0CBF, \u0CAE\u0CA4\u0CCD\u0CA4\u0CC7\u0CAE\u0CCD\u0CAE\u0CC6 \u0CB9\u0CC7\u0CB3\u0CBF."  # ಕ್ಷಮಿಸಿ, ಮತ್ತೇಮ್ಮೆ ಹೇಳಿ.
 
             t2 = time.time()
-            tts_pcm = await cartesia_tts_collect(response_text, language=effective_lang)
+            tts_total_bytes = 0
+            _ct = "audio/x-mulaw" if ("mulaw" in vobiz_encoding or "ulaw" in vobiz_encoding) else "audio/x-l16"
+
+            async for chunk in cartesia_tts_chunked(response_text, language=effective_lang):
+                tts_total_bytes += len(chunk)
+                if not call_active:
+                    break
+                if "mulaw" in vobiz_encoding or "ulaw" in vobiz_encoding:
+                    pcm_8k, _ = audioop.ratecv(chunk, 2, 1, 16000, 8000, None)
+                    out_chunk = audioop.lin2ulaw(pcm_8k, 2)
+                else:
+                    out_chunk, _ = audioop.ratecv(chunk, 2, 1, 16000, 8000, None)
+                frame = json.dumps({
+                    "event": "playAudio",
+                    "media": {
+                        "contentType": _ct,
+                        "sampleRate": 8000,
+                        "payload": base64.b64encode(out_chunk).decode(),
+                    },
+                })
+                await websocket.send_text(frame)
+
             tts_time = time.time() - t2
-            print(f"[Vobiz][TTS] {len(tts_pcm)}B PCM in {tts_time:.3f}s")
+            print(f"[Vobiz][TTS] {tts_total_bytes}B PCM in {tts_time:.3f}s")
 
             log_interaction(
                 user_text=user_text, assistant_text=response_text,
@@ -881,29 +902,9 @@ async def vobiz_stream(websocket: WebSocket):
                 total_time=round(stt_time + llm_time + tts_time, 3)
             )
 
-            if not tts_pcm:
-                print("[Vobiz][TTS] Empty â€” skipping send")
+            if not tts_total_bytes:
+                print("[Vobiz][TTS] Empty - skipping send")
                 return
-
-            if "mulaw" in vobiz_encoding or "ulaw" in vobiz_encoding:
-                pcm_8k, _ = audioop.ratecv(tts_pcm, 2, 1, 16000, 8000, None)
-                out_audio = audioop.lin2ulaw(pcm_8k, 2)
-                content_type = "audio/x-mulaw"
-            else:
-                out_audio, _ = audioop.ratecv(tts_pcm, 2, 1, 16000, 8000, None)
-                content_type = "audio/x-l16"
-
-            if call_active:
-                frame = json.dumps({
-                    "event": "playAudio",
-                    "media": {
-                        "contentType": content_type,
-                        "sampleRate": 8000,
-                        "payload": base64.b64encode(out_audio).decode(),
-                    },
-                })
-                await websocket.send_text(frame)
-                print(f"[Vobiz] Sent {len(out_audio)}B ({content_type}) via playAudio")
 
             if parsed.get("action") == "END_CALL":
                 call_active = False
@@ -976,20 +977,22 @@ async def vobiz_stream(websocket: WebSocket):
                     greeted = True
                     try:
                         welcome_text = "Hello, welcome to Doctor Deepti's Dental and Orthodontic Centre. How may I assist you?"
-                        tts_pcm = await cartesia_tts_collect(welcome_text, language="en")
-                        if tts_pcm:
-                            out_audio, _ = audioop.ratecv(tts_pcm, 2, 1, 16000, 8000, None)
+                        welcome_bytes = 0
+                        async for chunk in cartesia_tts_chunked(welcome_text, language="en"):
+                            welcome_bytes += len(chunk)
+                            out_chunk, _ = audioop.ratecv(chunk, 2, 1, 16000, 8000, None)
                             frame = json.dumps({
                                 "event": "playAudio",
                                 "media": {
                                     "contentType": "audio/x-l16",
                                     "sampleRate": 8000,
-                                    "payload": base64.b64encode(out_audio).decode(),
+                                    "payload": base64.b64encode(out_chunk).decode(),
                                 },
                             })
                             is_speaking = True
                             await websocket.send_text(frame)
-                            print(f"[Vobiz] âœ… Sent welcome greeting via playAudio ({len(out_audio)}B)")
+                        if welcome_bytes:
+                            print(f"[Vobiz] Sent welcome greeting via playAudio ({welcome_bytes}B)")
                     except Exception as e:
                         print(f"[Vobiz] Welcome greeting error: {e}")
                     finally:
