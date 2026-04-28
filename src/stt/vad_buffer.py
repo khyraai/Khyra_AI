@@ -12,7 +12,7 @@ class VadBufferConfig:
     frame_ms: int = 20
     start_trigger_ms: int = 60
     min_speech_ms: int = 350
-    silence_end_ms: int = 850
+    silence_end_ms: int = 1500
     target_emit_silence_ms: int = 500
     target_chunk_ms: int = 1200
     max_chunk_ms: int = 1800

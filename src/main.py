@@ -15,7 +15,7 @@ load_dotenv()
 
 import asyncio
 
-from groq import AsyncGroq
+from llm import llm_pool, LLM_MODEL
 
 # -----------------------------------------------------------------------
 # Module imports â€” separated concerns
@@ -59,7 +59,7 @@ app.add_middleware(
 # -----------------------------
 # Initialize Clients
 # -----------------------------
-groq_client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
+groq_client = llm_pool
 sarvam_api_key = os.getenv("SARVAM_API_KEY")
 
 # Initialize Session Store
@@ -84,8 +84,23 @@ async def clear_session(session_id: str = ""):
 async def run_agent1(user_text: str, memory: list) -> dict:
     return await _run_agent1(user_text, memory, groq_client)
 
+def _all_appointment_fields_present(st: dict) -> bool:
+    """True when name, age, reason, date AND time are all non-empty."""
+    return all(st.get(k) for k in ("name", "age", "reason", "date", "time"))
+
 async def run_agent2(user_text: str, memory: list, state: dict, agent1_context: dict):
     response, state, parsed = await _run_agent2_kn(user_text, memory, state, agent1_context, groq_client)
+
+    # Guard: LLM skipped CHECK_AVAILABILITY but all fields are filled
+    if (
+        parsed.get("action") != "CHECK_AVAILABILITY"
+        and _all_appointment_fields_present(state)
+        and state.get("confirmation_pending")
+        and not parsed.get("done")
+    ):
+        print("[Agent-2-KN] \u26a0\ufe0f All fields present but CHECK_AVAILABILITY skipped \u2014 forcing it")
+        parsed["action"] = "CHECK_AVAILABILITY"
+
     if parsed.get("action") == "CHECK_AVAILABILITY":
         tool_state = await _sanitize_state_for_english_tools(state)
         raw_date = tool_state.get("date", "")
@@ -96,6 +111,20 @@ async def run_agent2(user_text: str, memory: list, state: dict, agent1_context: 
             pass
         check_time = tool_state.get("time", "")
         print(f"[Agent-2-KN] Intercepting CHECK_AVAILABILITY for {raw_date} {check_time}")
+
+        valid, hours_msg = _is_valid_clinic_slot(raw_date, check_time)
+        if not valid:
+            print(f"[Agent-2-KN] \u274c Outside clinic hours: {hours_msg}")
+            if "Sunday" in hours_msg:
+                response = "\u0C95\u0CCD\u0CB7\u0CAE\u0CBF\u0CB8\u0CBF, \u0CAD\u0CBE\u0CA8\u0CC1\u0CB5\u0CBE\u0CB0 \u0C95\u0CCD\u0CB2\u0CBF\u0CA8\u0CBF\u0C95\u0CCD \u0CAE\u0CC1\u0C9A\u0CCD\u0C9A\u0CBF\u0CA6\u0CC6. \u0CA6\u0CAF\u0CB5\u0CBF\u0C9F\u0CCD\u0C9F\u0CC1 \u0CAC\u0CC7\u0CB0\u0CC6 \u0CA6\u0CBF\u0CA8 \u0CB9\u0CC7\u0CB3\u0CBF."
+            else:
+                response = "\u0C95\u0CCD\u0CB7\u0CAE\u0CBF\u0CB8\u0CBF, \u0C95\u0CCD\u0CB2\u0CBF\u0CA8\u0CBF\u0C95\u0CCD \u0CB8\u0CAE\u0CAF 10 AM\u200D\u2013\u200D1 PM \u0CAE\u0CA4\u0CCD\u0CA4\u0CC1 4 PM\u200D\u2013\u200D7 PM. \u0CA6\u0CAF\u0CB5\u0CBF\u0C9F\u0CCD\u0C9F\u0CC1 \u0CAC\u0CC7\u0CB0\u0CC6 \u0CB8\u0CAE\u0CAF \u0CB9\u0CC7\u0CB3\u0CBF."
+            state.pop("date", None)
+            state.pop("time", None)
+            state.pop("confirmation_pending", None)
+            parsed = {"response": response, "action": None, "handoff": False, "done": False, "state": state}
+            return response, state, parsed
+
         avail_result = check_availability(raw_date, check_time)
         is_available = avail_result.get('available', True)
         
@@ -126,6 +155,17 @@ async def run_agent2(user_text: str, memory: list, state: dict, agent1_context: 
 
 async def run_agent2_en(user_text: str, memory: list, state: dict, agent1_context: dict):
     response, state, parsed = await _run_agent2_en(user_text, memory, state, agent1_context, groq_client)
+
+    # Guard: LLM skipped CHECK_AVAILABILITY but all fields are filled
+    if (
+        parsed.get("action") != "CHECK_AVAILABILITY"
+        and _all_appointment_fields_present(state)
+        and state.get("confirmation_pending")
+        and not parsed.get("done")
+    ):
+        print("[Agent-2-EN] \u26a0\ufe0f All fields present but CHECK_AVAILABILITY skipped \u2014 forcing it")
+        parsed["action"] = "CHECK_AVAILABILITY"
+
     if parsed.get("action") == "CHECK_AVAILABILITY":
         # Convert ISO date (YYYY-MM-DD) to "DD Month YYYY" if needed
         raw_date = state.get("date", "")
@@ -137,6 +177,17 @@ async def run_agent2_en(user_text: str, memory: list, state: dict, agent1_contex
         check_date = raw_date
         check_time = state.get("time", "")
         print(f"[Agent-2-EN] Intercepting CHECK_AVAILABILITY for {check_date} {check_time}")
+
+        valid, hours_msg = _is_valid_clinic_slot(check_date, check_time)
+        if not valid:
+            print(f"[Agent-2-EN] \u274c Outside clinic hours: {hours_msg}")
+            response = f"I'm sorry, {hours_msg} Could you suggest a different date or time?"
+            state.pop("date", None)
+            state.pop("time", None)
+            state.pop("confirmation_pending", None)
+            parsed = {"response": response, "action": None, "handoff": False, "done": False, "state": state}
+            return response, state, parsed
+
         tool_state = await _sanitize_state_for_english_tools(state)
         avail_result = check_availability(check_date, check_time)
         is_available = avail_result.get('available', True)
@@ -168,15 +219,18 @@ async def run_agent2_en(user_text: str, memory: list, state: dict, agent1_contex
 
 async def run_agent3_kn(user_text: str, memory: list, state: dict, context: dict):
     response, state, parsed = await _run_agent3_kn(user_text, memory, state, context, groq_client)
-    
+
     # Intercept VERIFY_APPOINTMENT action
     if parsed.get("action") == "VERIFY_APPOINTMENT":
         print(f"[Agent-3-KN] Intercepting VERIFY_APPOINTMENT")
         name = state.get("name", "")
         phone = state.get("phone", "")
+        # Normalize phone to +91 format
+        phone = _normalize_phone_for_lookup(phone)
+        state["phone"] = phone
         prev_date = state.get("previous_date", "")
         prev_time = state.get("previous_time", "")
-        
+
         # Verify appointment exists
         verify_result = verify_appointment_for_cancellation(name, phone, prev_date, prev_time)
         
@@ -231,17 +285,34 @@ async def run_agent3_kn(user_text: str, memory: list, state: dict, context: dict
     return response, state, parsed
 
 
+def _normalize_phone_for_lookup(phone: str) -> str:
+    """Normalize phone number to +91XXXXXXXXXX format for database lookup."""
+    if not phone:
+        return phone
+    digits = re.sub(r"\D", "", str(phone))
+    # If 10 digits and doesn't start with country code, add +91
+    if len(digits) == 10 and not digits.startswith("91"):
+        return f"+91{digits}"
+    # If already 12 digits starting with 91, add +
+    if len(digits) == 12 and digits.startswith("91"):
+        return f"+{digits}"
+    return phone
+
+
 async def run_agent3_en(user_text: str, memory: list, state: dict, context: dict):
     response, state, parsed = await _run_agent3_en(user_text, memory, state, context, groq_client)
-    
+
     # Intercept VERIFY_APPOINTMENT action
     if parsed.get("action") == "VERIFY_APPOINTMENT":
         print(f"[Agent-3-EN] Intercepting VERIFY_APPOINTMENT")
         name = state.get("name", "")
         phone = state.get("phone", "")
+        # Normalize phone to +91 format
+        phone = _normalize_phone_for_lookup(phone)
+        state["phone"] = phone
         prev_date = state.get("previous_date", "")
         prev_time = state.get("previous_time", "")
-        
+
         # Verify appointment exists
         verify_result = verify_appointment_for_cancellation(name, phone, prev_date, prev_time)
         
@@ -325,7 +396,7 @@ async def _ensure_english_value(text: str) -> str:
             f"Value: {s}"
         )
         resp = await groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=LLM_MODEL,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=40,
             temperature=0.0,
@@ -408,6 +479,40 @@ def _is_valid_clinic_slot(date_str: str, time_str: str):
 # SHARED: State, Prompt, LLM, TTS helpers â€” now delegated to modules
 # (see utils.py / agent1.py / agent2.py / stt.py / tts.py)
 # =======================================================================
+
+
+# =======================================================================
+# VOBIZ CALL CONTROL
+# =======================================================================
+
+def _hangup_vobiz_call(call_uuid: str):
+    """Tell Vobiz to hang up the actual phone call via REST API."""
+    import requests as _requests
+    auth_id    = os.getenv("VOBIZ_AUTH_ID", "")
+    auth_token = os.getenv("VOBIZ_AUTH_TOKEN", "")
+    api_base   = os.getenv("VOBIZ_API_BASE", "https://api.vobiz.ai/api/v1").rstrip("/")
+
+    if not auth_id or not auth_token:
+        print("[HANGUP] VOBIZ_AUTH_ID / VOBIZ_AUTH_TOKEN not set — cannot hangup.")
+        return
+    if not call_uuid or call_uuid in ("unknown", "browser_default"):
+        print(f"[HANGUP] Skipping — invalid call_uuid: {call_uuid}")
+        return
+
+    url = f"{api_base}/Account/{auth_id}/Call/{call_uuid}/"
+    headers = {
+        "X-Auth-ID": auth_id,
+        "X-Auth-Token": auth_token,
+        "Content-Type": "application/json",
+    }
+    try:
+        resp = _requests.delete(url, headers=headers, timeout=3)
+        if resp.status_code in (204, 202, 200):
+            print(f"[HANGUP] ✅ Call {call_uuid} ended via API (HTTP {resp.status_code})")
+        else:
+            print(f"[HANGUP] ❌ HTTP {resp.status_code}: {resp.text}")
+    except Exception as e:
+        print(f"[HANGUP] ❌ Error: {e}")
 
 
 # =======================================================================
@@ -626,7 +731,9 @@ async def vobiz_stream(websocket: WebSocket):
             if not user_text.strip():
                 return
 
-            if user_text.strip().lower() in NOISE_TRANSCRIPTS or len(user_text.strip()) <= 2:
+            stripped = user_text.strip()
+            is_numeric = stripped.replace(".", "").replace("।", "").isdigit()
+            if stripped.lower() in NOISE_TRANSCRIPTS or (len(stripped) <= 2 and not is_numeric):
                 print(f"[Vobiz][STT] Noise transcript dropped: '{user_text}'")
                 return
 
@@ -670,10 +777,19 @@ async def vobiz_stream(websocket: WebSocket):
                 elif intent == "emergency":
                     agent1_ran = True
                     parsed = agent1_parsed
-                    response_text = (
-                        "This sounds like an emergency. Please come to the clinic immediately or call us directly. We will inform the doctor right away."
+                    parsed["action"] = "TRANSFER_CALL"
+                    parsed["metadata"] = agent1_parsed.get("metadata", {})
+                    if not parsed["metadata"]:
+                        parsed["metadata"] = {
+                            "reason": "Emergency assistance requested",
+                            "transfer_target": "+918660033297"
+                        }
+                    # Use Agent-1's own short response; fallback to short message
+                    agent1_response = agent1_parsed.get("response", "").strip()
+                    response_text = agent1_response if agent1_response else (
+                        "Please hold, connecting you now."
                         if effective_lang == "en"
-                        else "à²‡à²¦à³ à²¤à³à²°à³à²¤à³ à²¸à²®à²¸à³à²¯à³†à²¯à²‚à²¤à³† à²•à²¾à²£à³à²¤à³à²¤à²¿à²¦à³†. à²¦à²¯à²µà²¿à²Ÿà³à²Ÿà³ à²¤à²•à³à²·à²£ à²•à³à²²à²¿à²¨à²¿à²•à³â€Œà²—à³† à²¬à²¨à³à²¨à²¿ à²…à²¥à²µà²¾ à²¨à³‡à²°à²µà²¾à²—à²¿ à²¨à²®à³à²®à²¨à³à²¨à³ à²¸à²‚à²ªà²°à³à²•à²¿à²¸à²¿. à²¨à²¾à²µà³ à²¤à²•à³à²·à²£ à²µà³ˆà²¦à³à²¯à²°à²¨à³à²¨à³ à²¤à²¿à²³à²¿à²¸à³à²¤à³à²¤à³‡à²µà³†."
+                        else "\u0CA1\u0CBE\u0C95\u0CCD\u0C9F\u0CB0\u0CCD \u0C97\u0CC6 \u0C95\u0CA8\u0CC6\u0C95\u0CCD\u0C9F\u0CCD \u0CAE\u0CBE\u0CA1\u0CCD\u0CA4\u0CC0\u0CB5\u0CBF."
                     )
                 else:
                     print(f"[VOBIZ ROUTER] Agent-2 ({effective_lang}) | Intent: {intent}")
@@ -701,6 +817,12 @@ async def vobiz_stream(websocket: WebSocket):
                         response_text, state, parsed = await run_agent2_en(user_text, memory, state, agent1_context)
                     else:
                         response_text, state, parsed = await run_agent2(user_text, memory, state, agent1_context)
+
+                    # Agent-2 handoff → switch to Agent-3 for cancel/reschedule
+                    if parsed.get("handoff"):
+                        in_agent3 = True
+                        agent1_context["intent"] = "cancel_reschedule"
+                        print(f"[VOBIZ ROUTER] Agent-2 handoff → Agent-3 ({effective_lang})")
 
             llm_time = time.time() - t1
             print(f"[Vobiz][LLM] '{response_text}' in {llm_time:.3f}s")
@@ -732,9 +854,18 @@ async def vobiz_stream(websocket: WebSocket):
                     agent1_context=agent1_context,
                 )
 
-            if not response_text.strip():
-                print("[Vobiz][LLM] Empty response â€” using fallback")
-                response_text = "Sorry, could you please repeat that?" if effective_lang == "en" else "à²•à³à²·à²®à²¿à²¸à²¿, à²®à²¤à³à²¤à³Šà²®à³à²®à³† à²¹à³‡à²³à²¿."
+            # Guard: detect non-Kannada Indic script in Kannada responses
+            if effective_lang == "kn" and response_text.strip():
+                kannada_chars = sum(1 for ch in response_text if '\u0C80' <= ch <= '\u0CFF')
+                indic_chars = sum(1 for ch in response_text if '\u0900' <= ch <= '\u0DFF')
+                if indic_chars > 0 and kannada_chars < indic_chars * 0.5:
+                    print(f"[Vobiz][LLM] ⚠️ Non-Kannada script detected — using fallback")
+                    if parsed.get("action") == "END_CALL" or parsed.get("done"):
+                        response_text = "\u0CA7\u0CA8\u0CCD\u0CAF\u0CB5\u0CBE\u0CA6\u0C97\u0CB3\u0CC1, \u0CB6\u0CC1\u0CAD \u0CA6\u0CBF\u0CA8!"  # ಧನ್ಯವಾದಗಳು, ಶುಭ ದಿನ!
+                        parsed["action"] = "END_CALL"
+                        parsed["done"] = True
+                    else:
+                        response_text = "\u0C95\u0CCD\u0CB7\u0CAE\u0CBF\u0CB8\u0CBF, \u0CAE\u0CA4\u0CCD\u0CA4\u0CC7\u0CAE\u0CCD\u0CAE\u0CC6 \u0CB9\u0CC7\u0CB3\u0CBF."  # ಕ್ಷಮಿಸಿ, ಮತ್ತೇಮ್ಮೆ ಹೇಳಿ.
 
             t2 = time.time()
             tts_pcm = await cartesia_tts_collect(response_text, language=effective_lang)
@@ -776,10 +907,27 @@ async def vobiz_stream(websocket: WebSocket):
             if parsed.get("action") == "END_CALL":
                 call_active = False
                 try:
-                    await asyncio.sleep(1.0)
+                    await asyncio.sleep(1.5)
+                    # Tell Vobiz to hang up the actual phone call
+                    _hangup_vobiz_call(call_sid)
                     await websocket.close()
                 except Exception:
                     pass
+                return
+
+            # Handle emergency transfer
+            if parsed.get("action") == "TRANSFER_CALL":
+                call_active = False
+                print(f"[Vobiz] Emergency transfer requested for call {call_sid}")
+                try:
+                    # Play emergency message first
+                    await asyncio.sleep(1.5)
+                    # Transfer the call
+                    transfer_metadata = parsed.get("metadata", {}) if isinstance(parsed.get("metadata"), dict) else {}
+                    trigger_vobiz_transfer(call_sid, transfer_metadata)
+                    await websocket.close()
+                except Exception as e:
+                    print(f"[Vobiz] Transfer error: {e}")
                 return
 
         except Exception as e:

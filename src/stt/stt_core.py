@@ -291,7 +291,10 @@ def _drop_as_noise_or_duplicate(
         effective_min_chars = 1
 
     normalized_compact = normalized.replace(" ", "")
-    if not normalized_compact or len(normalized_compact) < effective_min_chars:
+    if not normalized_compact:
+        return True
+    # Allow short numeric transcripts (e.g. age "27", time "11")
+    if len(normalized_compact) < effective_min_chars and not normalized_compact.isdigit():
         return True
     if bool(re.search(r'([.?!,;:\-\'\"])(\1){3,}', t)):
         return True

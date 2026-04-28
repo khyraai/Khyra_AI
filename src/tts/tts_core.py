@@ -65,6 +65,7 @@ from .tts_metrics import (
 _CARTESIA_WS_URL   = os.getenv("CARTESIA_TTS_WS_URL",  "wss://api.cartesia.ai/tts/websocket")
 _CARTESIA_MODEL_ID = os.getenv("CARTESIA_MODEL_ID",     "sonic-3")
 _CARTESIA_VERSION  = os.getenv("CARTESIA_VERSION",      "2025-04-16")
+_CARTESIA_SPEED    = float(os.getenv("TTS_SPEED",          "0.9"))
 
 _TTS_SEMAPHORE            = asyncio.Semaphore(int(os.getenv("TTS_MAX_CONCURRENT",                "8")))
 _QUEUE_WAIT_TIMEOUT_SEC   = float(os.getenv("TTS_QUEUE_WAIT_TIMEOUT_SEC",     "2.5"))
@@ -442,6 +443,7 @@ async def _cartesia_attempt_collect(text: str, language: str, api_key: str) -> t
         "voice":         {"mode": "id", "id": voice_id},
         "language":      _cartesia_language_code(language),
         "output_format": {"container": "raw", "encoding": "pcm_s16le", "sample_rate": 16000},
+        "generation_config": {"speed": _CARTESIA_SPEED},
         "add_timestamps": False,
     })
 
@@ -517,6 +519,7 @@ async def _cartesia_attempt_stream(
         "voice":         {"mode": "id", "id": voice_id},
         "language":      _cartesia_language_code(language),
         "output_format": {"container": "raw", "encoding": "pcm_s16le", "sample_rate": 16000},
+        "generation_config": {"speed": _CARTESIA_SPEED},
         "add_timestamps": False,
     })
 
@@ -952,6 +955,7 @@ async def run_tts_collect_chunked(
         "voice":         {"mode": "id", "id": voice_id},
         "language":      _cartesia_language_code(language),
         "output_format": {"container": "raw", "encoding": "pcm_s16le", "sample_rate": 16000},
+        "generation_config": {"speed": _CARTESIA_SPEED},
         "add_timestamps": False,
     })
 

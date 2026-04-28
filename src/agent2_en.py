@@ -72,7 +72,7 @@ def build_agent2_en_prompt(config: dict = None, state: dict = None, agent1_conte
 
     clinic_name = config.get("clinic_name", "Doctor Deepti's Dental and Orthodontic Clinic")
     doctor_name = config.get("doctor_name", "Doctor Naga Deepti")
-    fee_min = config.get("consultation_fee_min", 150)
+    fee_min = config.get("consultation_fee_min", 200)
     fee_max = config.get("consultation_fee_max", 300)
     address = config.get("address", "Number 39, 3rd Cross, Dwarakanagar, Hoskerehalli, Bangalore")
     timings = config.get("timings", "Monday to Saturday — 10:00 AM to 1:00 PM and 4:00 PM to 7:00 PM. Closed on Sunday")
@@ -95,9 +95,13 @@ Client: {client_id}
 
 INTENT & BEHAVIORAL LOGIC (SOFT CONSTRAINTS):
 1. If intent = `enquiry`:
-   → ONLY answer the question clearly and concisely.
+   → If the question is SPECIFIC (timings, location, fees, doctor info), answer ONLY that question clearly and concisely.
+   → If the question is VAGUE or GENERAL (e.g. "I want to inquire about the clinic", "Tell me about the clinic"), do NOT dump all clinic info. Instead ask a short clarifying question: "Sure, would you like to know about our timings, location, or something else?"
+   → Keep enquiry responses SHORT — answer only what was asked.
    → Do NOT ask for their name.
    → Do NOT initiate the appointment flow.
+   → If the user says thanks or seems to be wrapping up, ask if there is anything else you can help with.
+   → Only set action = "END_CALL" and done = true AFTER the user confirms they need no further help.
 2. If intent = `appointment`:
    → Start slot filling.
    → Ask ONLY ONE missing field at a time.
@@ -107,6 +111,9 @@ INTENT & BEHAVIORAL LOGIC (SOFT CONSTRAINTS):
 4. If ALL required fields are collected AND slot is available:
    → Confirm the appointment.
    → Set done = true.
+5. If the user asks to CANCEL or RESCHEDULE an existing appointment:
+   → Do NOT handle it yourself. Set handoff = true and respond: "Let me transfer you to our scheduling assistant."
+   → Do NOT clear state fields or say "cancelled".
 
 APPOINTMENT QUESTION ORDER (IMPORTANT):
 - Ask for fields in this order (one at a time):
@@ -187,9 +194,25 @@ Today is {today_str}. Current time: {current_time_str}.
 Relative date references: {day_refs_str}
 
 EXAMPLES (FEW-SHOT):
--- Example 1: Enquiry --
+-- Example 1A: Vague Enquiry → ask clarifying question --
+User: "I wanted to inquire about the clinic."
+Output: {{"response": "Sure, would you like to know about our timings, location, or something else?", "intent": "enquiry", "action": null, "handoff": false, "state": {{}}, "done": false}}
+
+-- Example 1B: Specific Enquiry → answer concisely --
 User: "How much is a consultation?"
-Output: {{"response": "The consultation fee ranges from ₹{fee_min} to ₹{fee_max}. Exact procedure costs are provided by the doctor after your consultation.", "intent": "enquiry", "action": null, "handoff": false, "state": {{}}, "done": false}}
+Output: {{"response": "The consultation fee ranges from ₹{fee_min} to ₹{fee_max}.", "intent": "enquiry", "action": null, "handoff": false, "state": {{}}, "done": false}}
+
+-- Example 1C: Specific Enquiry (timings) --
+User: "What are the clinic timings?"
+Output: {{"response": "We are open Monday to Saturday, 10 AM to 1 PM and 4 PM to 7 PM. We are closed on Sundays.", "intent": "enquiry", "action": null, "handoff": false, "state": {{}}, "done": false}}
+
+-- Example 1D: Enquiry — user says thanks → ask if anything else --
+User: "Okay, thank you."
+Output: {{"response": "You're welcome! Is there anything else I can help you with?", "intent": "enquiry", "action": null, "handoff": false, "state": {{}}, "done": false}}
+
+-- Example 1E: Enquiry — user confirms done → END_CALL --
+User: "No, that's all. Thanks."
+Output: {{"response": "Thank you for calling!", "intent": "enquiry", "action": "END_CALL", "handoff": false, "state": {{}}, "done": true}}
 
 -- Example 2: Enquiry to Appointment --
 User: "I'd like to book an appointment for tomorrow."
@@ -253,7 +276,7 @@ Output: {{"response": "Raj, your appointment with Dr. Dipti is confirmed for Mon
 -- Example 8: No more help → end call --
 User: "No"
 Current State: {{"name": "Raj", "age": 30, "reason": "consultation", "date": "2026-04-06", "time": "11:00 AM", "confirmation_pending": false}}
-Output: {{"response": "Thank you for calling Asha Dental Clinic. Have a great day.", "intent": "appointment", "action": "END_CALL", "handoff": false, "state": {{}}, "done": true}}
+Output: {{"response": "Thank you for calling!", "intent": "appointment", "action": "END_CALL", "handoff": false, "state": {{}}, "done": true}}
 
 OUTPUT FORMAT (STRICT JSON):
 {{

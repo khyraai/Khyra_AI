@@ -16,6 +16,7 @@ tts_events        — Per-request TTS telemetry
 llm_events        — Per-request LLM telemetry (tokens, latency, input/output)
 cancellations     — Cancellation / reschedule records
 audit_log         — Generic change-event trail
+reschedules       — Detailed reschedule history (appointment_id soft link)
 
 All tables share session_id as a soft TEXT link (no FK constraint).
 
@@ -39,6 +40,7 @@ append_audit(session_id, event_type, entity_type="", entity_id="",
 """
 
 import json
+import os
 import re
 import uuid
 from datetime import datetime, timedelta
@@ -49,6 +51,7 @@ import pytz
 from pg import get_conn
 
 _IST = pytz.timezone("Asia/Kolkata")
+MAX_BOOKINGS_PER_SLOT = int(os.getenv("MAX_BOOKINGS_PER_SLOT", "1"))
 
 _KANNADA_DIGITS = str.maketrans("೦೧೨೩೪೫೬೭೮೯", "0123456789")
 _KANNADA_TIME_HINTS = {
@@ -77,7 +80,8 @@ _SCHEMA_STATEMENTS = [
         emergency_transfer_number TEXT,
         connection_id           TEXT,
         created_at              TEXT DEFAULT (NOW()::TEXT),
-        updated_at              TEXT DEFAULT (NOW()::TEXT)
+        updated_at              TEXT DEFAULT (NOW()::TEXT),
+        config_version          INTEGER
     )
     """,
     """
@@ -106,7 +110,10 @@ _SCHEMA_STATEMENTS = [
         booked_via       TEXT DEFAULT 'agent',
         agent_notes      TEXT,
         created_at       TEXT DEFAULT (NOW()::TEXT),
-        updated_at       TEXT DEFAULT (NOW()::TEXT)
+        updated_at       TEXT DEFAULT (NOW()::TEXT),
+        sync_status      TEXT,
+        sync_error       TEXT,
+        retry_count      INTEGER DEFAULT 0
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_appt_start_time    ON appointments(start_time)",
@@ -150,6 +157,7 @@ _SCHEMA_STATEMENTS = [
         tts_cost_inr    REAL DEFAULT 0,
         llm_cost_inr    REAL DEFAULT 0,
         total_cost_inr  REAL DEFAULT 0,
+        total_tokens    INTEGER DEFAULT 0,
         created_at      TEXT DEFAULT (NOW()::TEXT)
     )
     """,
@@ -233,6 +241,17 @@ _SCHEMA_STATEMENTS = [
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS reschedules (
+        id              SERIAL PRIMARY KEY,
+        appointment_id  TEXT,
+        old_start_time  TEXT,
+        new_start_time  TEXT,
+        reason          TEXT,
+        created_at      TEXT DEFAULT (NOW()::TEXT)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_reschedules_appt_id ON reschedules(appointment_id)",
+    """
     CREATE TABLE IF NOT EXISTS audit_log (
         id          SERIAL PRIMARY KEY,
         session_id  TEXT,
@@ -246,6 +265,14 @@ _SCHEMA_STATEMENTS = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_audit_session ON audit_log(session_id)",
+    # ---------------------------------------------------------------------------
+    # Column migrations — safe to re-run (ADD COLUMN IF NOT EXISTS)
+    # ---------------------------------------------------------------------------
+    "ALTER TABLE clients      ADD COLUMN IF NOT EXISTS config_version INTEGER",
+    "ALTER TABLE appointments ADD COLUMN IF NOT EXISTS sync_status    TEXT",
+    "ALTER TABLE appointments ADD COLUMN IF NOT EXISTS sync_error     TEXT",
+    "ALTER TABLE appointments ADD COLUMN IF NOT EXISTS retry_count    INTEGER DEFAULT 0",
+    "ALTER TABLE call_logs    ADD COLUMN IF NOT EXISTS total_tokens   INTEGER DEFAULT 0",
 ]
 
 
@@ -263,7 +290,7 @@ def init_db():
     except Exception as e:
         print(f"[DB] Could not upsert clients from config: {e}")
 
-    print("[DB] PostgreSQL schema initialised (10 tables)")
+    print("[DB] PostgreSQL schema initialised (11 tables)")
 
 
 # ---------------------------------------------------------------------------
@@ -367,9 +394,12 @@ def _parse_to_ist_iso(target_date: str, target_time: str) -> str | None:
     for fmt in (
         "%d %B %Y %I:%M %p",
         "%d %B %Y %I %p",
+        "%d %B %Y %H:%M",
+        "%d %B %Y %H",
         "%Y-%m-%d %I:%M %p",
         "%Y-%m-%d %H:%M",
         "%d %b %Y %I:%M %p",
+        "%d %b %Y %H:%M",
     ):
         try:
             naive = datetime.strptime(datetime_str.replace(",", ""), fmt)
@@ -1013,18 +1043,17 @@ def _is_slot_booked(target_date: str, target_time: str) -> bool:
     try:
         with get_conn() as cur:
             cur.execute("""
-                SELECT id FROM appointments
+                SELECT COUNT(*) AS cnt FROM appointments
                 WHERE start_time = %s AND status NOT IN ('cancelled', 'rescheduled')
-                LIMIT 1
             """, (iso_timestamp,))
-            row = cur.fetchone()
-        return bool(row)
+            cnt = cur.fetchone()["cnt"]
+        return cnt >= MAX_BOOKINGS_PER_SLOT
     except Exception as e:
         print(f"⚠️ [DB] Primary _is_slot_booked error: {e}. Trying secondary...")
 
     try:
         rows = get_agent_appointments(iso_timestamp)
-        return bool(rows)
+        return len(rows) >= MAX_BOOKINGS_PER_SLOT
     except Exception:
         return False
 
@@ -1152,16 +1181,15 @@ def check_availability(target_date: str, target_time: str) -> dict:
     try:
         with get_conn() as cur:
             cur.execute("""
-                SELECT id FROM appointments
+                SELECT COUNT(*) AS cnt FROM appointments
                 WHERE start_time = %s AND status NOT IN ('cancelled', 'rescheduled')
-                LIMIT 1
             """, (iso_timestamp,))
-            row = cur.fetchone()
-        if row:
-            print(f"❌ [DB] PRIMARY: {target_date} {target_time} is BOOKED")
+            cnt = cur.fetchone()["cnt"]
+        if cnt >= MAX_BOOKINGS_PER_SLOT:
+            print(f"❌ [DB] PRIMARY: {target_date} {target_time} is FULL ({cnt}/{MAX_BOOKINGS_PER_SLOT})")
             result["available"] = False
         else:
-            print(f"✅ [DB] PRIMARY: {target_date} {target_time} is AVAILABLE")
+            print(f"✅ [DB] PRIMARY: {target_date} {target_time} is AVAILABLE ({cnt}/{MAX_BOOKINGS_PER_SLOT})")
     except Exception as e:
         print(f"⚠️ [DB] Primary check failed: {e}. Falling back to secondary...")
         primary_failed = True
@@ -1169,11 +1197,11 @@ def check_availability(target_date: str, target_time: str) -> dict:
     if primary_failed:
         try:
             rows = get_agent_appointments(iso_timestamp)
-            if rows:
-                print(f"❌ [DB] SECONDARY: {target_date} {target_time} is BOOKED (fallback)")
+            if len(rows) >= MAX_BOOKINGS_PER_SLOT:
+                print(f"❌ [DB] SECONDARY: {target_date} {target_time} is FULL ({len(rows)}/{MAX_BOOKINGS_PER_SLOT} fallback)")
                 result["available"] = False
             else:
-                print(f"✅ [DB] SECONDARY: {target_date} {target_time} is AVAILABLE (fallback)")
+                print(f"✅ [DB] SECONDARY: {target_date} {target_time} is AVAILABLE ({len(rows)}/{MAX_BOOKINGS_PER_SLOT} fallback)")
         except Exception as e:
             print(f"⚠️ [DB] Secondary check also failed: {e}")
 
