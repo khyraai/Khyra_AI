@@ -870,21 +870,16 @@ async def vobiz_stream(websocket: WebSocket):
 
             t2 = time.time()
             tts_total_bytes = 0
-            _ct = "audio/x-mulaw" if ("mulaw" in vobiz_encoding or "ulaw" in vobiz_encoding) else "audio/x-l16"
 
             async for chunk in cartesia_tts_chunked(response_text, language=effective_lang):
                 tts_total_bytes += len(chunk)
                 if not call_active:
                     break
-                if "mulaw" in vobiz_encoding or "ulaw" in vobiz_encoding:
-                    pcm_8k, _ = audioop.ratecv(chunk, 2, 1, 16000, 8000, None)
-                    out_chunk = audioop.lin2ulaw(pcm_8k, 2)
-                else:
-                    out_chunk, _ = audioop.ratecv(chunk, 2, 1, 16000, 8000, None)
+                out_chunk, _ = audioop.ratecv(chunk, 2, 1, 16000, 8000, None)
                 frame = json.dumps({
                     "event": "playAudio",
                     "media": {
-                        "contentType": _ct,
+                        "contentType": "audio/x-l16",
                         "sampleRate": 8000,
                         "payload": base64.b64encode(out_chunk).decode(),
                     },
