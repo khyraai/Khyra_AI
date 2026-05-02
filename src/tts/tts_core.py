@@ -580,7 +580,7 @@ async def _sarvam_tts_attempt(text: str, language: str) -> tuple:
     speaker   = (
         os.getenv("SARVAM_TTS_SPEAKER_KN", "karun")
         if lang_code == "kn-IN"
-        else os.getenv("SARVAM_TTS_SPEAKER_EN", "anushka")
+        else os.getenv("SARVAM_TTS_SPEAKER_EN", "kavya")
     )
     url     = "https://api.sarvam.ai/text-to-speech"
     headers = {"api-subscription-key": key, "Content-Type": "application/json"}
@@ -932,7 +932,7 @@ async def _sarvam_tts_stream_chunked(
     speaker = (
         os.getenv("SARVAM_TTS_SPEAKER_KN", "ishita")
         if lang_code == "kn-IN"
-        else os.getenv("SARVAM_TTS_SPEAKER_EN", "anushka")
+        else os.getenv("SARVAM_TTS_SPEAKER_EN", "kavya")
     )
 
     url     = "https://api.sarvam.ai/text-to-speech/stream"
