@@ -912,6 +912,75 @@ async def run_tts_collect(
 
 
 # ---------------------------------------------------------------------------
+# Provider: Sarvam Bulbul v3 HTTP streaming (primary chunked provider)
+# ---------------------------------------------------------------------------
+async def _sarvam_tts_stream_chunked(
+    text: str,
+    language: str,
+    min_chunk_ms: int = 300,
+):
+    """Sarvam Bulbul v3 HTTP streaming TTS — async generator yielding PCM s16le 16kHz.
+
+    Uses /text-to-speech/stream endpoint with linear16 codec at 16kHz.
+    Yields nothing on any error so caller can fall back to Cartesia/ElevenLabs.
+    """
+    key = os.getenv("SARVAM_API_KEY", "").strip()
+    if not key:
+        return
+
+    lang_code = "kn-IN" if (language or "").lower().startswith("kn") else "en-IN"
+    speaker = (
+        os.getenv("SARVAM_TTS_SPEAKER_KN", "ishita")
+        if lang_code == "kn-IN"
+        else os.getenv("SARVAM_TTS_SPEAKER_EN", "anushka")
+    )
+
+    url     = "https://api.sarvam.ai/text-to-speech/stream"
+    headers = {"api-subscription-key": key, "Content-Type": "application/json"}
+    payload = {
+        "text":                 text,
+        "target_language_code": lang_code,
+        "speaker":              speaker,
+        "model":                os.getenv("SARVAM_TTS_MODEL", "bulbul:v3"),
+        "output_audio_codec":   "linear16",
+        "speech_sample_rate":   16000,
+        "pace":                 float(os.getenv("SARVAM_TTS_PACE", "0.95")),
+        "enable_preprocessing": True,
+    }
+
+    # min_chunk_bytes at 16kHz PCM s16le (2 bytes/sample)
+    min_chunk_bytes = max(4000, int(min_chunk_ms * 16000 * 2 / 1000))
+    buffer: list   = []
+    buf_bytes: int = 0
+
+    session = await _get_http_session()
+    try:
+        async with session.post(url, headers=headers, json=payload) as resp:
+            if resp.status != 200:
+                body = await resp.text()
+                print(f"[TTS][SARVAM-STREAM] HTTP {resp.status}: {body[:200]}")
+                return
+            async for chunk in resp.content.iter_chunked(8192):
+                if not chunk:
+                    continue
+                buffer.append(chunk)
+                buf_bytes += len(chunk)
+                if buf_bytes >= min_chunk_bytes:
+                    yield b"".join(buffer)
+                    buffer  = []
+                    buf_bytes = 0
+    except asyncio.TimeoutError:
+        print("[TTS][SARVAM-STREAM] Timeout")
+        return
+    except Exception as exc:
+        print(f"[TTS][SARVAM-STREAM] Exception: {exc}")
+        return
+
+    if buffer:
+        yield b"".join(buffer)
+
+
+# ---------------------------------------------------------------------------
 # Public entry point 1b: chunked collect mode (Vobiz incremental streaming)
 # ---------------------------------------------------------------------------
 async def run_tts_collect_chunked(
@@ -922,83 +991,96 @@ async def run_tts_collect_chunked(
 ):
     """Async generator: yields PCM s16le 16kHz chunks buffered to ~min_chunk_ms.
 
-    Allows Vobiz to send incremental playAudio events, reducing perceived latency
-    by ~1s vs collect mode for typical 60-100 char Kannada responses.
-    Uses a fresh WebSocket per call to avoid pool lock contention during yields.
-    Falls back to a single bulk yield on connection error.
+    Provider order:
+        1. Sarvam Bulbul v3  (primary  — HTTP streaming, no credits issue)
+        2. Cartesia WebSocket (fallback — code preserved, commented out)
+        3. run_tts_collect()  (final fallback — Cartesia collect / ElevenLabs)
     """
     text = _sanitize_text(text)
     if not text:
         return
 
-    api_key = _next_cartesia_key()
-    if not api_key:
-        pcm = await run_tts_collect(text, language=language)
-        if pcm:
-            yield pcm
+    # ── Primary: Sarvam Bulbul v3 HTTP streaming ────────────────────────────
+    yielded_any = False
+    try:
+        async for chunk in _sarvam_tts_stream_chunked(text, language, min_chunk_ms=min_chunk_ms):
+            yield chunk
+            yielded_any = True
+    except Exception as exc:
+        print(f"[TTS][CHUNKED] Sarvam stream exception: {exc}")
+
+    if yielded_any:
         return
 
-    # min_chunk_bytes: at 16kHz PCM s16le (2 bytes/sample)
-    # 300 ms * 16000 samples/s * 2 bytes/sample = 9600 bytes
-    min_chunk_bytes = max(4000, int(min_chunk_ms * 16000 * 2 / 1000))
-    voice_id = _cartesia_voice_for_language(language)
-    uri = (
-        f"{_CARTESIA_WS_URL}"
-        f"?api_key={api_key}"
-        f"&cartesia_version={_CARTESIA_VERSION}"
-    )
-    import uuid as _uuid
-    payload = json.dumps({
-        "context_id":    str(_uuid.uuid4()),
-        "model_id":      _CARTESIA_MODEL_ID,
-        "transcript":    text,
-        "voice":         {"mode": "id", "id": voice_id},
-        "language":      _cartesia_language_code(language),
-        "output_format": {"container": "raw", "encoding": "pcm_s16le", "sample_rate": 16000},
-        "generation_config": {"speed": _CARTESIA_SPEED},
-        "add_timestamps": False,
-    })
+    print("[TTS][CHUNKED] Sarvam stream yielded nothing — trying Cartesia fallback")
 
-    buffer: list  = []
-    buf_bytes: int = 0
-    yielded_any   = False
+    # ── Fallback: Cartesia WebSocket ─────────────────────────────────────────
+    # [CARTESIA FALLBACK — uncomment this entire block to use Cartesia as primary instead]
+    # api_key = _next_cartesia_key()
+    # if not api_key:
+    #     pcm = await run_tts_collect(text, language=language)
+    #     if pcm:
+    #         yield pcm
+    #     return
+    #
+    # min_chunk_bytes = max(4000, int(min_chunk_ms * 16000 * 2 / 1000))
+    # voice_id = _cartesia_voice_for_language(language)
+    # uri = (
+    #     f"{_CARTESIA_WS_URL}"
+    #     f"?api_key={api_key}"
+    #     f"&cartesia_version={_CARTESIA_VERSION}"
+    # )
+    # import uuid as _uuid
+    # cart_payload = json.dumps({
+    #     "context_id":    str(_uuid.uuid4()),
+    #     "model_id":      _CARTESIA_MODEL_ID,
+    #     "transcript":    text,
+    #     "voice":         {"mode": "id", "id": voice_id},
+    #     "language":      _cartesia_language_code(language),
+    #     "output_format": {"container": "raw", "encoding": "pcm_s16le", "sample_rate": 16000},
+    #     "generation_config": {"speed": _CARTESIA_SPEED},
+    #     "add_timestamps": False,
+    # })
+    # cart_buffer: list  = []
+    # cart_buf_bytes: int = 0
+    # cart_yielded: bool  = False
+    # try:
+    #     async with websockets.connect(uri, open_timeout=5.0, close_timeout=2.0) as ws:
+    #         await ws.send(cart_payload)
+    #         async for raw_msg in ws:
+    #             try:
+    #                 msg = json.loads(raw_msg)
+    #             except Exception:
+    #                 continue
+    #             msg_type = msg.get("type", "")
+    #             if msg_type == "chunk":
+    #                 chunk = base64.b64decode(msg.get("data", ""))
+    #                 if chunk:
+    #                     cart_buffer.append(chunk)
+    #                     cart_buf_bytes += len(chunk)
+    #                     if cart_buf_bytes >= min_chunk_bytes:
+    #                         yield b"".join(cart_buffer)
+    #                         cart_yielded = True
+    #                         cart_buffer    = []
+    #                         cart_buf_bytes = 0
+    #             elif msg_type == "error":
+    #                 print(f"[TTS][CHUNKED] Cartesia error: {msg.get('message', msg)}")
+    #                 break
+    #             elif msg_type == "done":
+    #                 break
+    # except Exception as exc:
+    #     print(f"[TTS][CHUNKED] Cartesia exception: {exc}")
+    # if cart_buffer:
+    #     yield b"".join(cart_buffer)
+    #     cart_yielded = True
+    # if cart_yielded:
+    #     return
+    # print("[TTS][CHUNKED] Cartesia also yielded nothing")
 
-    try:
-        async with websockets.connect(uri, open_timeout=5.0, close_timeout=2.0) as ws:
-            await ws.send(payload)
-            async for raw_msg in ws:
-                try:
-                    msg = json.loads(raw_msg)
-                except Exception:
-                    continue
-                msg_type = msg.get("type", "")
-                if msg_type == "chunk":
-                    chunk = base64.b64decode(msg.get("data", ""))
-                    if chunk:
-                        buffer.append(chunk)
-                        buf_bytes += len(chunk)
-                        if buf_bytes >= min_chunk_bytes:
-                            yield b"".join(buffer)
-                            yielded_any = True
-                            buffer = []
-                            buf_bytes = 0
-                elif msg_type == "error":
-                    print(f"[TTS][CHUNKED] Cartesia error: {msg.get('message', msg)}")
-                    break
-                elif msg_type == "done":
-                    break
-    except Exception as exc:
-        print(f"[TTS][CHUNKED] Exception: {exc}")
-
-    if buffer:
-        yield b"".join(buffer)
-        yielded_any = True
-
-    if not yielded_any:
-        print("[TTS][CHUNKED] Cartesia yielded nothing — falling back to collect mode (Sarvam/ElevenLabs)")
-        pcm = await run_tts_collect(text, language=language)
-        if pcm:
-            yield pcm
+    # ── Final fallback: collect mode (Cartesia collect → ElevenLabs) ────────
+    pcm = await run_tts_collect(text, language=language)
+    if pcm:
+        yield pcm
 
 
 # ---------------------------------------------------------------------------
