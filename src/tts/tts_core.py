@@ -578,7 +578,7 @@ async def _sarvam_tts_attempt(text: str, language: str) -> tuple:
 
     lang_code = "kn-IN" if (language or "").lower().startswith("kn") else "en-IN"
     speaker   = (
-        os.getenv("SARVAM_TTS_SPEAKER_KN", "karun")
+        os.getenv("SARVAM_TTS_SPEAKER_KN", "kavya")
         if lang_code == "kn-IN"
         else os.getenv("SARVAM_TTS_SPEAKER_EN", "kavya")
     )
@@ -930,7 +930,7 @@ async def _sarvam_tts_stream_chunked(
 
     lang_code = "kn-IN" if (language or "").lower().startswith("kn") else "en-IN"
     speaker = (
-        os.getenv("SARVAM_TTS_SPEAKER_KN", "ishita")
+        os.getenv("SARVAM_TTS_SPEAKER_KN", "kavya")
         if lang_code == "kn-IN"
         else os.getenv("SARVAM_TTS_SPEAKER_EN", "kavya")
     )
