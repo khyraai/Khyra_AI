@@ -268,11 +268,19 @@ _SCHEMA_STATEMENTS = [
     # ---------------------------------------------------------------------------
     # Column migrations — safe to re-run (ADD COLUMN IF NOT EXISTS)
     # ---------------------------------------------------------------------------
-    "ALTER TABLE clients      ADD COLUMN IF NOT EXISTS config_version INTEGER",
-    "ALTER TABLE appointments ADD COLUMN IF NOT EXISTS sync_status    TEXT",
-    "ALTER TABLE appointments ADD COLUMN IF NOT EXISTS sync_error     TEXT",
-    "ALTER TABLE appointments ADD COLUMN IF NOT EXISTS retry_count    INTEGER DEFAULT 0",
-    "ALTER TABLE call_logs    ADD COLUMN IF NOT EXISTS total_tokens   INTEGER DEFAULT 0",
+    "ALTER TABLE clients           ADD COLUMN IF NOT EXISTS config_version INTEGER",
+    "ALTER TABLE appointments      ADD COLUMN IF NOT EXISTS sync_status    TEXT",
+    "ALTER TABLE appointments      ADD COLUMN IF NOT EXISTS sync_error     TEXT",
+    "ALTER TABLE appointments      ADD COLUMN IF NOT EXISTS retry_count    INTEGER DEFAULT 0",
+    "ALTER TABLE call_logs         ADD COLUMN IF NOT EXISTS total_tokens   INTEGER DEFAULT 0",
+    # Multi-client isolation migrations
+    "ALTER TABLE appointments      ADD COLUMN IF NOT EXISTS client_id      TEXT",
+    "ALTER TABLE agent_appointments ADD COLUMN IF NOT EXISTS client_id     TEXT",
+    "ALTER TABLE reschedules       ADD COLUMN IF NOT EXISTS session_id     TEXT",
+    "ALTER TABLE reschedules       ADD COLUMN IF NOT EXISTS client_id      TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_appt_client_id        ON appointments(client_id)",
+    "CREATE INDEX IF NOT EXISTS idx_agent_appt_client_id  ON agent_appointments(client_id)",
+    "CREATE INDEX IF NOT EXISTS idx_reschedules_client_id ON reschedules(client_id)",
 ]
 
 
@@ -416,12 +424,13 @@ def insert_appointment(row: dict) -> str:
     with get_conn() as cur:
         cur.execute("""
             INSERT INTO appointments
-                (id, session_id, connection_id, google_event_id, patient_name, patient_phone,
+                (id, session_id, client_id, connection_id, google_event_id, patient_name, patient_phone,
                  start_time, end_time, appointment_type, status, doctor_name,
                  reason, booked_via, agent_notes, created_at, updated_at)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT(id) DO UPDATE SET
                 session_id=EXCLUDED.session_id,
+                client_id=EXCLUDED.client_id,
                 connection_id=EXCLUDED.connection_id,
                 patient_name=EXCLUDED.patient_name,
                 patient_phone=EXCLUDED.patient_phone,
@@ -437,6 +446,7 @@ def insert_appointment(row: dict) -> str:
         """, (
             appt_id,
             row.get("session_id", ""),
+            row.get("client_id", ""),
             row.get("connection_id", ""),
             row.get("google_event_id", ""),
             row.get("patient_name", ""),
@@ -803,7 +813,7 @@ def _normalize_appointment_datetime(raw: str) -> str:
     return _IST.localize(naive_dt).isoformat()
 
 
-def save_agent_appointment(payload: dict, session_id: str = "") -> bool:
+def save_agent_appointment(payload: dict, session_id: str = "", client_id: str = "") -> bool:
     """
     Save an appointment to the SECONDARY agent_appointments table in PostgreSQL.
     This is the agent's own fallback copy — written at booking time.
@@ -819,16 +829,18 @@ def save_agent_appointment(payload: dict, session_id: str = "") -> bool:
             except Exception:
                 pass
 
+        resolved_client_id = client_id or payload.get("client_id", "")
         now = datetime.now().isoformat()
         with get_conn() as cur:
             cur.execute("""
                 INSERT INTO agent_appointments (
-                    id, session_id, patient_name, patient_phone, start_time, end_time,
+                    id, session_id, client_id, patient_name, patient_phone, start_time, end_time,
                     appointment_type, status, doctor_name, reason,
                     booked_via, agent_notes, created_at, updated_at
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT(id) DO UPDATE SET
                     session_id=EXCLUDED.session_id,
+                    client_id=EXCLUDED.client_id,
                     start_time=EXCLUDED.start_time,
                     end_time=EXCLUDED.end_time,
                     status=EXCLUDED.status,
@@ -836,6 +848,7 @@ def save_agent_appointment(payload: dict, session_id: str = "") -> bool:
             """, (
                 payload.get("id", ""),
                 session_id or payload.get("session_id", ""),
+                resolved_client_id,
                 payload.get("patient_name", ""),
                 payload.get("patient_phone", ""),
                 start_time,

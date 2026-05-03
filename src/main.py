@@ -38,7 +38,8 @@ from stt import (
     pcm16_to_wav_bytes,
 )
 from tts import cartesia_tts_collect, cartesia_tts_chunked, cartesia_tts_stream
-from database import check_availability, verify_appointment_for_cancellation, update_appointment_status, reschedule_appointment
+from database import check_availability, verify_appointment_for_cancellation, update_appointment_status, reschedule_appointment, log_call_start
+from client_config import get_config_by_did, get_default_config
 
 # -----------------------------
 # Create FastAPI App
@@ -531,22 +532,28 @@ async def vobiz_answer(request: Request):
     body_str = body.decode()
     print(f"[Vobiz] /answer â€” {body_str[:200]}")
 
-    # Parse form data to safely extract the caller number (typically in 'From')
+    # Parse form data to extract caller (From) and called DID (To)
     import urllib.parse
     parsed_body = urllib.parse.parse_qs(body_str)
     caller_phone = parsed_body.get("From", [""])[0]
+    did_number   = parsed_body.get("To", [""])[0]
 
-    # Hangup signal â€” return empty OK
+    # Hangup signal — return empty OK
     if "CallStatus=completed" in body_str or "CallStatus=busy" in body_str:
         return Response(content="OK", media_type="text/plain")
 
     host     = request.headers.get("host", "localhost:8000")
     scheme   = "wss" if ("ngrok" in host or request.url.scheme == "https") else "ws"
-    
-    stream_url = f"{scheme}://{host}/vobiz-stream"
+
+    params = {}
     if caller_phone:
-        stream_url += f"?phone={urllib.parse.quote(caller_phone)}"
-        print(f"[Vobiz] Caller Phone: {caller_phone}")
+        params["phone"] = caller_phone
+    if did_number:
+        params["did"] = did_number
+    stream_url = f"{scheme}://{host}/vobiz-stream"
+    if params:
+        stream_url += "?" + urllib.parse.urlencode(params)
+    print(f"[Vobiz] Caller: {caller_phone}  DID: {did_number}")
 
     xml_response = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -605,10 +612,18 @@ async def vobiz_stream(websocket: WebSocket):
     call_active = True
 
     caller_phone = websocket.query_params.get("phone", "unknown")
-    print(f"\n[Vobiz] ðŸ“ž Call connected | Caller: {caller_phone}")
+    did_number   = websocket.query_params.get("did", "")
+
+    # Resolve client config from DID; fall back to default
+    client_cfg  = (get_config_by_did(did_number) if did_number else None) or get_default_config()
+    client_id   = client_cfg.get("client_id", "default")
+    print(f"\n[Vobiz] Call connected | Caller: {caller_phone} | DID: {did_number} | Client: {client_id}")
 
     state = get_initial_state()
-    state["phone"] = caller_phone
+    state["phone"]         = caller_phone
+    state["client_id"]     = client_id
+    state["did_number"]    = did_number
+    state["connection_id"] = client_cfg.get("connection_id", client_id)
     memory = []
 
     session_key = "vobiz_call"
@@ -851,8 +866,9 @@ async def vobiz_stream(websocket: WebSocket):
                     state=safe_state,
                     phone=caller_phone,
                     confirmation_status="confirmed",
-                    language="en",
+                    language=effective_lang,
                     agent1_context=agent1_context,
+                    client_id=client_id,
                 )
 
             # Guard: detect non-Kannada Indic script in Kannada responses
@@ -965,15 +981,33 @@ async def vobiz_stream(websocket: WebSocket):
                 saved_state, saved_memory = await asyncio.to_thread(session_store.load_session, session_key)
                 if saved_state:
                     state = saved_state
+                    # Re-apply client identity in case saved state predates multi-client
+                    state.setdefault("client_id", client_id)
+                    state.setdefault("connection_id", client_cfg.get("connection_id", client_id))
                     memory = saved_memory
                     print(f"[Vobiz] Recovered session for {session_key}")
+
+                # Log call start with client/DID context
+                try:
+                    await asyncio.to_thread(
+                        log_call_start, session_key, client_id,
+                        did_number=did_number, caller_phone=caller_phone,
+                        language=client_cfg.get("default_language", "en"),
+                    )
+                except Exception as _lce:
+                    print(f"[Vobiz] log_call_start error: {_lce}")
 
                 if not greeted and call_active:
                     greeted = True
                     try:
-                        welcome_text = "Hello, welcome to Doctor Deepti's Dental and Orthodontic Centre. How may I assist you?"
+                        welcome_lang  = client_cfg.get("default_language", "en")
+                        clinic_name   = client_cfg.get("clinic_name", "our clinic")
+                        if welcome_lang == "kn":
+                            welcome_text = f"ನಮಸ್ಕಾರ, {clinic_name} ಗೆ ಸ್ವಾಗತ. ನಾನು ನಿಮಗೆ ಹೇಗೆ ಸಹಾಯ ಮಾಡಲಿ?"
+                        else:
+                            welcome_text = f"Hello, welcome to {clinic_name}. How may I assist you?"
                         welcome_bytes = 0
-                        async for chunk in cartesia_tts_chunked(welcome_text, language="en"):
+                        async for chunk in cartesia_tts_chunked(welcome_text, language=welcome_lang):
                             welcome_bytes += len(chunk)
                             out_chunk, _ = audioop.ratecv(chunk, 2, 1, 16000, 8000, None)
                             frame = json.dumps({

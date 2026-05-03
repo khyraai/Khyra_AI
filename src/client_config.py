@@ -86,21 +86,70 @@ def load_client_configs() -> dict:
     return normalised
 
 
+def _load_from_db_by_did(norm: str) -> dict | None:
+    """DB fallback: query clients table for a DID not found in JSON cache."""
+    try:
+        from pg import get_conn
+        with get_conn() as cur:
+            cur.execute(
+                "SELECT * FROM clients WHERE did_number = %s OR did_number = %s LIMIT 1",
+                (norm, norm.lstrip("+")),
+            )
+            row = cur.fetchone()
+        if row:
+            cfg = dict(row)
+            # Cache so next lookup is instant
+            _did_to_config[norm] = cfg
+            cid = cfg.get("client_id", "")
+            if cid:
+                _id_to_config[cid] = cfg
+            return cfg
+    except Exception as e:
+        print(f"[ClientConfig] DB fallback error for DID {norm}: {e}")
+    return None
+
+
+def _load_from_db_by_client_id(client_id: str) -> dict | None:
+    """DB fallback: query clients table for a client_id not in JSON cache."""
+    try:
+        from pg import get_conn
+        with get_conn() as cur:
+            cur.execute("SELECT * FROM clients WHERE client_id = %s LIMIT 1", (client_id,))
+            row = cur.fetchone()
+        if row:
+            cfg = dict(row)
+            _id_to_config[client_id] = cfg
+            norm = _normalise_did(cfg.get("did_number", ""))
+            if norm:
+                _did_to_config[norm] = cfg
+            return cfg
+    except Exception as e:
+        print(f"[ClientConfig] DB fallback error for client_id {client_id}: {e}")
+    return None
+
+
 def get_config_by_did(did: str) -> dict | None:
-    """Return config for the given DID number, or None if not found."""
+    """Return config for the given DID number, or None if not found.
+    Checks JSON cache first; falls back to DB for dynamically registered clients."""
     load_client_configs()
     norm = _normalise_did(did)
     if norm in _did_to_config:
         return _did_to_config[norm]
     if not norm.startswith("+") and ("+" + norm) in _did_to_config:
         return _did_to_config["+" + norm]
-    return None
+    # DB fallback — client registered in DB but not in client_config.json
+    return _load_from_db_by_did(norm)
 
 
 def get_config_by_client_id(client_id: str) -> dict | None:
-    """Return config by client_id string, or None if not found."""
+    """Return config by client_id string, or None if not found.
+    Checks JSON cache first; falls back to DB."""
     load_client_configs()
-    return _id_to_config.get((client_id or "").strip())
+    cid = (client_id or "").strip()
+    result = _id_to_config.get(cid)
+    if result:
+        return result
+    return _load_from_db_by_client_id(cid)
 
 
 def get_default_config() -> dict:

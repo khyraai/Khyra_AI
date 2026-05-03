@@ -46,6 +46,7 @@ def build_scheduling_payload(
     notes: str = "",
     language: str = "kn",
     agent1_context: dict = None,
+    client_id: str = "",
 ) -> dict:
     """
     Build the strict scheduling event payload.
@@ -117,9 +118,12 @@ def build_scheduling_payload(
     raw_doctor = state.get("doctor", "") or ""
     doctor_name = "Doctor Naga Deepti" if not raw_doctor or raw_doctor == "Doctor Naga Deepti - MDS - Orthodontics and Dentofacial Orthopaedics" else raw_doctor
 
+    resolved_client_id = client_id or state.get("client_id", "")
+
     payload = {
         "id": str(uuid.uuid4()),
-        "connection_id": state.get("call_sid", ""),  # Fallback to empty if not mapped
+        "client_id": resolved_client_id,
+        "connection_id": state.get("connection_id", state.get("call_sid", "")),
         "google_event_id": "",
         "patient_name": state.get("name", ""),
         "patient_phone": phone or state.get("phone", ""),
@@ -138,10 +142,10 @@ def build_scheduling_payload(
     }
 
     print(f"[SCHEDULING PAYLOAD]\n{json.dumps(payload, indent=2, ensure_ascii=False)}")
-    
+
     # Save to secondary agent_appointments table in PostgreSQL
     if event_type == "appointment_create":
-        save_agent_appointment(payload, session_id=state.get("call_sid", ""))
+        save_agent_appointment(payload, session_id=state.get("call_sid", ""), client_id=resolved_client_id)
     
     return payload
 
