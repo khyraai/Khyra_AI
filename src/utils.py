@@ -20,6 +20,91 @@ from database import save_agent_appointment
 
 
 # -----------------------------------------------------------------------
+# Security Guardrails — pre-LLM filter
+# -----------------------------------------------------------------------
+
+_JAILBREAK_RE = re.compile(
+    r"ignore\s+(all\s+|your\s+|previous\s+|any\s+)?(prior\s+|previous\s+|all\s+)?(instructions?|rules?|context|constraints?)"
+    r"|forget\s+(your\s+|all\s+|the\s+)?(rules?|instructions?|role|context|previous|prior)"
+    r"|you\s+are\s+now\s+(a\s+|an\s+)?"
+    r"|new\s+(persona|role|instructions?|rules?|identity)"
+    r"|from\s+now\s+on\s+you\s+(are|will|must|should)"
+    r"|act\s+as\s+(if\s+)?(you\s+are|a\s+|an\s+)"
+    r"|pretend\s+(to\s+be|you\s+are|you\s+were)"
+    r"|roleplay\s+as"
+    r"|simulate\s+(being|a\s+|an\s+)"
+    r"|\bDAN\b"
+    r"|jailbreak"
+    r"|do\s+anything\s+now"
+    r"|override\s+(your\s+|all\s+)?(rules?|instructions?|constraints?|guidelines?)"
+    r"|without\s+(any\s+)?(restrictions?|constraints?|limits?|rules?|guidelines?)",
+    re.IGNORECASE,
+)
+
+_META_RE = re.compile(
+    r"who\s+(built|made|created|trained|developed|programmed|coded|wrote|designed)\s+you"
+    r"|what\s+(ai|model|llm|language\s+model|system|version|technology|tech)\s+are\s+you"
+    r"|are\s+you\s+(chat\s*gpt|gpt[\s\-]?[0-9]*|openai|claude|anthropic|gemini|llama|groq|mistral|an?\s+ai|an?\s+artificial)"
+    r"|which\s+(company|organization|team)\s+(made|built|created|trained|owns)\s+you"
+    r"|what\s+(is|are)\s+you\s+(running\s+on|powered\s+by|built\s+on|made\s+of)"
+    r"|who\s+(is|are)\s+your\s+(creator|maker|developer|owner|company)"
+    r"|your\s+(underlying\s+)?(model|architecture|training|ai|technology)",
+    re.IGNORECASE,
+)
+
+_OUT_OF_SCOPE_RE = re.compile(
+    r"(write|compose|draft)\s+(a\s+|an\s+)?(poem|song|story|essay|code|program|script|email\s+for)"
+    r"|(solve|calculate|compute)\s+.{0,25}(equation|math|formula|integral)"
+    r"|(what\s+is|explain|tell\s+me\s+about)\s+.{0,30}(weather|cricket|politics|stock\s+market|bitcoin|crypto|recipe\s+for|history\s+of)",
+    re.IGNORECASE,
+)
+
+# Polite deflection responses keyed by language
+_GUARDRAIL_RESPONSES = {
+    "kn": {
+        "jailbreak": "ನಾನು ದಿವ್ಯ, ಕ್ಲಿನಿಕ್‌ನ ರಿಸೆಪ್ಷನಿಸ್ಟ್. ನನ್ನ ಕೆಲಸ ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ಮತ್ತು ಕ್ಲಿನಿಕ್ ಮಾಹಿತಿಗೆ ಸೀಮಿತವಾಗಿದೆ. ನಿಮಗೆ ಹೇಗೆ ಸಹಾಯ ಮಾಡಲಿ?",
+        "meta":      "ನಾನು ದಿವ್ಯ, ಕ್ಲಿನಿಕ್‌ನ ರಿಸೆಪ್ಷನಿಸ್ಟ್. ನಿಮಗೆ ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ಅಥವಾ ಕ್ಲಿನಿಕ್ ಬಗ್ಗೆ ಏನಾದರೂ ಸಹಾಯ ಬೇಕಾ?",
+        "scope":     "ಕ್ಷಮಿಸಿ, ಅದು ನನ್ನ ಕ್ಷೇತ್ರದ ಹೊರಗೆ. ಕ್ಲಿನಿಕ್ ಅಥವಾ ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ಬಗ್ಗೆ ಸಹಾಯ ಮಾಡಬಲ್ಲೆ.",
+    },
+    "en": {
+        "jailbreak": "I'm Divya, the clinic receptionist. I can only help with appointments and clinic enquiries. How may I assist you?",
+        "meta":      "I'm Divya, the clinic receptionist. I'm not able to share information about the technology behind this service. Can I help you with an appointment?",
+        "scope":     "I'm sorry, that's outside what I can help with. I can assist with clinic appointments and enquiries.",
+    },
+}
+
+
+def check_guardrails(text: str, lang: str = "en") -> tuple:
+    """
+    Pre-LLM security check.
+
+    Returns (blocked: bool, response_text: str).
+    If blocked=True, the caller should speak response_text and skip LLM.
+    lang: "kn" | "en"
+    """
+    t = (text or "").strip()
+    if not t:
+        return False, ""
+
+    lang_key = "kn" if str(lang).lower().startswith("kn") else "en"
+    responses = _GUARDRAIL_RESPONSES[lang_key]
+
+    if _JAILBREAK_RE.search(t):
+        print(f"[GUARDRAIL] Jailbreak attempt blocked: {t[:120]}")
+        return True, responses["jailbreak"]
+
+    if _META_RE.search(t):
+        print(f"[GUARDRAIL] Meta question blocked: {t[:120]}")
+        return True, responses["meta"]
+
+    if _OUT_OF_SCOPE_RE.search(t):
+        print(f"[GUARDRAIL] Out-of-scope request blocked: {t[:120]}")
+        return True, responses["scope"]
+
+    return False, ""
+
+
+# -----------------------------------------------------------------------
 # State Factory
 # -----------------------------------------------------------------------
 def get_initial_state() -> dict:

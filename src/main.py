@@ -23,7 +23,7 @@ from llm import llm_pool, LLM_MODEL
 from utils import (
     get_initial_state, parse_llm_json, log_interaction,
     build_scheduling_payload, SessionStore, trigger_vobiz_transfer,
-    send_to_n8n_webhook_sync
+    send_to_n8n_webhook_sync, check_guardrails
 )
 from agent1 import run_agent1 as _run_agent1
 from agent2_kn import run_agent2_kn as _run_agent2_kn
@@ -759,6 +759,25 @@ async def vobiz_stream(websocket: WebSocket):
             t1 = time.time()
             effective_lang = "en" if str(detected_lang).lower().startswith("en") else "kn"
             print(f"[Vobiz][LANG LOCKED from STT] {detected_lang} → {effective_lang}")
+
+            # ── Security guardrail pre-check (before any LLM call) ──────────
+            _blocked, _guard_response = check_guardrails(user_text, lang=effective_lang)
+            if _blocked:
+                print(f"[GUARDRAIL] Blocked — responding directly without LLM")
+                async for chunk in cartesia_tts_chunked(_guard_response, language=effective_lang):
+                    if not call_active:
+                        break
+                    out_chunk, _ = audioop.ratecv(chunk, 2, 1, 16000, 8000, None)
+                    await websocket.send_text(json.dumps({
+                        "event": "playAudio",
+                        "media": {
+                            "contentType": "audio/x-l16",
+                            "sampleRate": 8000,
+                            "payload": base64.b64encode(out_chunk).decode(),
+                        },
+                    }))
+                return
+            # ────────────────────────────────────────────────────────────────
 
             if not agent1_ran:
                 agent1_parsed = await run_agent1(user_text, memory)
