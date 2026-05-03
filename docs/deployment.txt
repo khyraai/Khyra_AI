@@ -1,0 +1,162 @@
+KHYRA AI — DIGITALOCEAN DROPLET DEPLOYMENT GUIDE
+=================================================
+
+INFRASTRUCTURE OVERVIEW
+------------------------
+Provider      : DigitalOcean
+Droplet IP    : 168.144.91.95
+Region        : Bangalore (blr1)
+OS            : Ubuntu 24.04 LTS
+Domain        : api.khyraai.com
+App Port      : 8000
+DB Port       : 5432
+Adminer Port  : 8080
+
+
+1. SSH INTO DROPLET
+-------------------
+ssh -i C:\Users\Lenovo\ssh_digital_ocean root@168.144.91.95
+
+
+2. INSTALL DOCKER & DOCKER COMPOSE
+------------------------------------
+curl -fsSL https://get.docker.com | sh
+docker --version && docker compose version
+
+
+3. CLONE REPOSITORY
+--------------------
+mkdir -p /opt/khyra
+cd /opt
+git clone https://github.com/khyraai/Khyra_AI.git khyra
+cd khyra
+
+
+4. CONFIGURE .env
+------------------
+nano /opt/khyra/.env
+
+Copy contents from local .env file, then ensure these two values are correct:
+
+  DATABASE_URL=postgresql://khyra:khyra_secret@postgres:5432/khyra_db
+  SERVER_BASE_URL=https://api.khyraai.com
+
+  NOTE: Use 'postgres' (service name), NOT 'localhost' for DATABASE_URL.
+
+To update after copying:
+  sed -i 's|SERVER_BASE_URL=.*|SERVER_BASE_URL=https://api.khyraai.com|' .env
+  sed -i 's|DATABASE_URL=.*|DATABASE_URL=postgresql://khyra:khyra_secret@postgres:5432/khyra_db|' .env
+
+
+5. OPEN FIREWALL PORTS
+-----------------------
+ufw allow 22/tcp
+ufw allow 80/tcp
+ufw allow 443/tcp
+ufw allow 8000/tcp
+ufw allow 8080/tcp
+ufw --force enable
+ufw status
+
+
+6. BUILD AND START SERVICES
+-----------------------------
+cd /opt/khyra
+docker compose up -d --build
+
+Verify containers are healthy:
+  docker compose ps
+  curl https://api.khyraai.com/health
+
+Expected response: {"message":"Vobiz Voice Assistant Running"}
+
+
+7. NGINX + SSL SETUP
+---------------------
+Install:
+  apt install -y nginx certbot python3-certbot-nginx
+
+Get SSL certificate:
+  certbot --nginx -d api.khyraai.com
+
+Configure Nginx:
+  nano /etc/nginx/sites-enabled/default
+
+Paste this config:
+------------------------------------------------------------
+server {
+    listen 80;
+    server_name api.khyraai.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name api.khyraai.com;
+
+    ssl_certificate /etc/letsencrypt/live/api.khyraai.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/api.khyraai.com/privkey.pem;
+
+    location / {
+        proxy_pass http://localhost:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_read_timeout 3600;
+        proxy_send_timeout 3600;
+    }
+}
+------------------------------------------------------------
+
+Test and reload:
+  nginx -t
+  systemctl reload nginx
+
+
+8. VOBIZ DASHBOARD
+-------------------
+Set Answer URL to:
+  https://api.khyraai.com/answer
+
+
+9. DATABASE UI (ADMINER)
+--------------------------
+Access at: http://168.144.91.95:8080
+
+  System   : PostgreSQL
+  Server   : postgres
+  Username : khyra
+  Password : khyra_secret
+  Database : khyra_db
+
+Adminer starts automatically with docker compose up.
+
+
+10. USEFUL COMMANDS
+--------------------
+# View live app logs
+docker compose logs -f app
+
+# Restart app (after .env change)
+docker compose restart app
+
+# Update after code push
+cd /opt/khyra
+git pull origin main
+docker compose up -d --build app
+
+# Stop all services
+docker compose down
+
+# Check container status
+docker compose ps
+
+
+11. SSL CERTIFICATE RENEWAL
+-----------------------------
+Certbot auto-renews via scheduled task. To manually renew:
+  certbot renew --dry-run
+
+Certificate expiry: 2026-07-27 (auto-renews before expiry)
