@@ -411,7 +411,10 @@ def _parse_to_ist_iso(target_date: str, target_time: str) -> str | None:
     ):
         try:
             naive = datetime.strptime(datetime_str.replace(",", ""), fmt)
-            return _IST.localize(naive).isoformat()
+            dt = _IST.localize(naive)
+            tz = dt.strftime("%z")          # "+0530"
+            tz_fmt = tz[:3] + ":" + tz[3:] # "+05:30"
+            return dt.strftime("%Y-%m-%d %H:%M:%S") + tz_fmt
         except ValueError:
             continue
     return None
