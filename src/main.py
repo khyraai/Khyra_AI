@@ -66,6 +66,9 @@ sarvam_api_key = os.getenv("SARVAM_API_KEY")
 # Initialize Session Store
 session_store = SessionStore()
 
+# callUUID → DID mapping (populated by /answer, consumed by start event)
+_call_did_map: dict[str, str] = {}
+
 
 @app.post("/session/clear")
 @app.get("/session/clear")
@@ -537,10 +540,15 @@ async def vobiz_answer(request: Request):
     parsed_body = urllib.parse.parse_qs(body_str)
     caller_phone = parsed_body.get("From", [""])[0]
     did_number   = parsed_body.get("To", [""])[0]
+    call_uuid    = parsed_body.get("CallUUID", [""])[0]
 
     # Hangup signal — return empty OK
     if "CallStatus=completed" in body_str or "CallStatus=busy" in body_str:
         return Response(content="OK", media_type="text/plain")
+
+    # Store callUUID → DID so the WebSocket start event can resolve client config
+    if call_uuid and did_number:
+        _call_did_map[call_uuid] = did_number
 
     host     = request.headers.get("host", "localhost:8000")
     scheme   = "wss" if ("ngrok" in host or "khyraai" in host) else "ws"
@@ -551,7 +559,7 @@ async def vobiz_answer(request: Request):
     stream_url = f"{scheme}://{host}/vobiz-stream"
     if params:
         stream_url += "?" + urllib.parse.urlencode(params)
-    print(f"[Vobiz] Caller: {caller_phone}  DID: {did_number}")
+    print(f"[Vobiz] Caller: {caller_phone}  DID: {did_number}  CallUUID: {call_uuid}")
 
     xml_response = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -907,6 +915,7 @@ async def vobiz_stream(websocket: WebSocket):
                 and state.get("reason")
             ):
                 safe_state = await _sanitize_state_for_english_tools(state)
+                safe_state["call_sid"] = session_key
                 pending_payload = build_scheduling_payload(
                     event_type="appointment_create",
                     state=safe_state,
@@ -929,6 +938,7 @@ async def vobiz_stream(websocket: WebSocket):
             ):
                 _evt = parsed.get("event_type", "appointment_cancel")
                 _a3  = dict(agent3_state)
+                _a3["call_sid"] = session_key
                 _prev_iso = f"{_a3.get('previous_date', '')} {_a3.get('previous_time', '')}".strip()
 
                 if _evt == "appointment_reschedule":
@@ -1057,9 +1067,10 @@ async def vobiz_stream(websocket: WebSocket):
                 fmt = info.get("mediaFormat", {})
                 vobiz_encoding = fmt.get("encoding", "audio/x-mulaw").lower()
 
-                # ── DID resolution from start event ──────────────────────────
+                # ── DID resolution: map from /answer, then start event fields ─
                 did_number = (
-                    info.get("to")
+                    _call_did_map.pop(call_sid, None)
+                    or info.get("to")
                     or info.get("calledNumber")
                     or info.get("destination")
                     or info.get("did")
