@@ -24,7 +24,7 @@ from database import save_agent_appointment
 # -----------------------------------------------------------------------
 
 _JAILBREAK_RE = re.compile(
-    r"ignore\s+(all\s+|your\s+|previous\s+|any\s+)?(prior\s+|previous\s+|all\s+)?(instructions?|rules?|context|constraints?)"
+    r"ignore\s+.{0,25}(instructions?|rules?|context|constraints?)"
     r"|forget\s+(your\s+|all\s+|the\s+)?(rules?|instructions?|role|context|previous|prior)"
     r"|you\s+are\s+now\s+(a\s+|an\s+)?"
     r"|new\s+(persona|role|instructions?|rules?|identity)"
