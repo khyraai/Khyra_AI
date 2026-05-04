@@ -879,8 +879,10 @@ async def vobiz_stream(websocket: WebSocket):
             if len(memory) > 12:
                 memory = memory[-12:]
 
+            # ── Agent-2: new appointment ──────────────────────────────────
             if (
-                pending_payload is None
+                not in_agent3
+                and pending_payload is None
                 and not pending_payload_sent
                 and parsed.get("done")
                 and state.get("name")
@@ -898,6 +900,41 @@ async def vobiz_stream(websocket: WebSocket):
                     agent1_context=agent1_context,
                     client_id=client_id,
                 )
+
+            # ── Agent-3: cancel or reschedule ─────────────────────────────
+            if (
+                in_agent3
+                and pending_payload is None
+                and not pending_payload_sent
+                and parsed.get("done")
+                and parsed.get("confirmation_status") == "confirmed"
+                and agent3_state.get("name")
+                and agent3_state.get("previous_date")
+            ):
+                _evt = parsed.get("event_type", "appointment_cancel")
+                _a3  = dict(agent3_state)
+                _prev_iso = f"{_a3.get('previous_date', '')} {_a3.get('previous_time', '')}".strip()
+
+                if _evt == "appointment_reschedule":
+                    # start_time = new slot; previous_datetime = old slot
+                    _a3["date"] = _a3.get("new_date", "")
+                    _a3["time"] = _a3.get("new_time", "")
+                else:
+                    # cancel: start_time = the appointment being cancelled
+                    _a3["date"] = _a3.get("previous_date", "")
+                    _a3["time"] = _a3.get("previous_time", "")
+
+                pending_payload = build_scheduling_payload(
+                    event_type=_evt,
+                    state=_a3,
+                    phone=caller_phone,
+                    previous_datetime_iso=_prev_iso or None,
+                    confirmation_status="confirmed",
+                    language=effective_lang,
+                    agent1_context=agent1_context,
+                    client_id=client_id,
+                )
+                print(f"[Agent-3] Queued {_evt} payload for n8n")
 
             # Guard: detect non-Kannada Indic script in Kannada responses
             if effective_lang == "kn" and response_text.strip():

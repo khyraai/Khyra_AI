@@ -31,6 +31,11 @@ SUITES = [
         "desc":  "DID → clinic resolution, dynamic welcome, cache invalidation",
     },
     {
+        "name":  "Agent-3 Cancel/Reschedule Payloads",
+        "file":  "test_agent3_payload.py",
+        "desc":  "Payload fields, event_type, status, date mapping, DB schema",
+    },
+    {
         "name":  "Security Guardrails",
         "file":  "test_guardrails.py",
         "desc":  "Pre-filter regex + live LLM deflection on all 5 agents",
