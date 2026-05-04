@@ -543,7 +543,7 @@ async def vobiz_answer(request: Request):
         return Response(content="OK", media_type="text/plain")
 
     host     = request.headers.get("host", "localhost:8000")
-    scheme   = "wss" if ("ngrok" in host or request.url.scheme == "https") else "ws"
+    scheme   = "ws" if (host.startswith("localhost") or host.startswith("127.0.0.1")) else "wss"
 
     params = {}
     if caller_phone:
