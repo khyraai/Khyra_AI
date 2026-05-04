@@ -368,8 +368,8 @@ async def run_agent3_en(user_text: str, memory: list, state: dict, context: dict
     
     return response, state, parsed
 
-async def run_stt_http(audio_bytes: bytes, filename: str = "audio.wav"):
-    return await _run_stt_http(audio_bytes, sarvam_api_key, filename)
+async def run_stt_http(audio_bytes: bytes, filename: str = "audio.wav", language_code: str = "unknown"):
+    return await _run_stt_http(audio_bytes, sarvam_api_key, filename, language_code=language_code)
 
 def _normalize_streaming_lang_to_en_or_kn(detected_lang: str, transcript: str) -> str:
     dl = (detected_lang or "").strip().lower()
@@ -733,7 +733,10 @@ async def vobiz_stream(websocket: WebSocket):
             wav_bytes = pcm16_to_wav_bytes(pcm_16k, 16000)
 
             t0 = time.time()
-            user_text, detected_lang = await run_stt_http(wav_bytes)
+            user_text, detected_lang = await run_stt_http(
+                wav_bytes,
+                language_code=session_language if session_language else "unknown",
+            )
             stt_time = time.time() - t0
             print(f"[Vobiz][STT] '{user_text}' ({detected_lang}) in {stt_time:.3f}s")
 
@@ -757,8 +760,14 @@ async def vobiz_stream(websocket: WebSocket):
                 return
 
             t1 = time.time()
-            effective_lang = "en" if str(detected_lang).lower().startswith("en") else "kn"
-            print(f"[Vobiz][LANG LOCKED from STT] {detected_lang} → {effective_lang}")
+            # ── Language lock: use session_language if already set; only use STT on first turn ──
+            if session_language:
+                effective_lang = session_language
+                print(f"[Vobiz][LANG] Session locked to {session_language} (ignoring STT {detected_lang})")
+            else:
+                effective_lang = "en" if str(detected_lang).lower().startswith("en") else "kn"
+                session_language = effective_lang
+                print(f"[Vobiz][LANG] First turn — locked to {session_language} from STT {detected_lang}")
 
             # ── Security guardrail pre-check (before any LLM call) ──────────
             _blocked, _guard_response = check_guardrails(user_text, lang=effective_lang)
@@ -834,13 +843,6 @@ async def vobiz_stream(websocket: WebSocket):
                         response_text, state, parsed = await run_agent2(user_text, memory, state, agent1_context)
                     agent1_ran = True
             else:
-                if session_language is None:
-                    agent1_parsed = await run_agent1(user_text, memory)
-                    raw_lang = agent1_parsed.get("language", "unknown")
-                    if raw_lang != "unknown":
-                        session_language = raw_lang
-                effective_lang = session_language if session_language else effective_lang
-
                 if in_agent3:
                     print(f"[VOBIZ ROUTER] Agent-3 ({effective_lang}) | continuation")
                     if effective_lang == "en":
@@ -858,6 +860,13 @@ async def vobiz_stream(websocket: WebSocket):
                         in_agent3 = True
                         agent1_context["intent"] = "cancel_reschedule"
                         print(f"[VOBIZ ROUTER] Agent-2 handoff → Agent-3 ({effective_lang})")
+
+            # ── Language switch: re-lock session if LLM detected an explicit switch ──
+            _lang_switch = parsed.get("language_switch")
+            if _lang_switch in ("kn", "en") and _lang_switch != session_language:
+                print(f"[LANG SWITCH] User requested switch: {session_language} → {_lang_switch}")
+                session_language = _lang_switch
+                effective_lang   = _lang_switch
 
             llm_time = time.time() - t1
             print(f"[Vobiz][LLM] '{response_text}' in {llm_time:.3f}s")
