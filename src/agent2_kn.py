@@ -98,7 +98,7 @@ APPOINTMENT REQUIRED FIELDS:
 2. age
 3. reason
 4. date (Always resolve relative dates like "tomorrow" to absolute YYYY-MM-DD in the state)
-5. time
+5. time (ALWAYS store in English HH:MM AM/PM format, e.g. "10:00 AM", "4:30 PM". NEVER store in Kannada script)
 
 HARD CONSTRAINTS:
 - Your output MUST strictly follow the JSON schema.
@@ -106,6 +106,7 @@ HARD CONSTRAINTS:
 - DO NOT include reasoning steps, analysis, or explanations.
 - Maintain state consistency across turns. Only update state during appointments.
 - **CRITICAL**: Output raw Kannada text directly. NEVER use Unicode escape sequences.
+- **CRITICAL**: ALWAYS store `time` in English HH:MM AM/PM format. Convert Kannada times: "ಬೆಳಿಗ್ಗೆ 5" → "5:00 AM", "ಸಂಜೆ 4:30" → "4:30 PM", "ಮಧ್ಯಾಹ್ನ 12" → "12:00 PM". NEVER put Kannada in the state `time` field.
 - **CRITICAL**: ALL response text MUST be in Kannada script (ಕನ್ನಡ). NEVER output Tamil, Sinhala, Telugu, or any other script. If unsure, use the exact Kannada phrases from the examples.
 - Do NOT repeat the user's name in every question. Use the name ONLY:
   1) once right after you capture it ("ಧನ್ಯವಾದಗಳು, <name>...")
@@ -220,7 +221,7 @@ OUTPUT FORMAT (STRICT JSON):
     "name": "<string or null>",
     "age": <number or null>,
     "date": "<string YYYY-MM-DD or null>",
-    "time": "<string or null>",
+    "time": "<English HH:MM AM/PM only, e.g. '10:00 AM', '4:30 PM', or null>",
     "reason": "<string or null>",
     "confirmation_pending": <true | false | null>
   }},

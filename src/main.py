@@ -411,11 +411,42 @@ async def _ensure_english_value(text: str) -> str:
     except Exception:
         return "".join(ch for ch in s if ord(ch) < 128).strip()
 
+async def _ensure_english_time(text: str) -> str:
+    """Convert any regional/Kannada time expression to English HH:MM AM/PM format."""
+    if text is None:
+        return ""
+    s = str(text).strip()
+    if not s:
+        return ""
+    if s.isascii():
+        return s
+    try:
+        prompt = (
+            "Convert the following time expression to English HH:MM AM/PM format (e.g. '10:00 AM', '4:30 PM'). "
+            "Rules: ಬೆಳಿಗ್ಗೆ/ಬೆಳಗ್ಗೆ = morning (AM), ಮಧ್ಯಾಹ್ನ = noon (PM after 12), "
+            "ಸಂಜೆ/ರಾತ್ರಿ = evening/night (PM). "
+            "Return ONLY the time in HH:MM AM/PM format, nothing else.\n\n"
+            f"Time: {s}"
+        )
+        resp = await groq_client.chat.completions.create(
+            model=LLM_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=20,
+            temperature=0.0,
+            stream=False,
+        )
+        out = (resp.choices[0].message.content or "").strip()
+        return out if out.isascii() else "".join(ch for ch in out if ord(ch) < 128).strip()
+    except Exception:
+        return "".join(ch for ch in s if ord(ch) < 128).strip()
+
 async def _sanitize_state_for_english_tools(state: dict) -> dict:
     safe = dict(state or {})
-    for k in ("name", "reason", "date", "time"):
+    for k in ("name", "reason", "date"):
         if safe.get(k) is not None:
             safe[k] = await _ensure_english_value(safe.get(k))
+    if safe.get("time") is not None:
+        safe["time"] = await _ensure_english_time(safe.get("time"))
     return safe
 
 def _is_valid_clinic_slot(date_str: str, time_str: str):
@@ -459,7 +490,12 @@ def _is_valid_clinic_slot(date_str: str, time_str: str):
         except ValueError:
             continue
     if time_obj is None:
-        return True, ""  # fail-open on unparseable time
+        # Date was valid but time is unrecognisable — ask the user to clarify
+        return False, (
+            "I didn't catch a valid time. "
+            "Our centre hours are 10:00 AM–1:00 PM and 4:00 PM–7:00 PM. "
+            "What time works for you?"
+        )
     
     # ---- Sunday closed ---------------------------------------------------
     # Python: Monday=0 ... Sunday=6
@@ -982,6 +1018,9 @@ async def vobiz_stream(websocket: WebSocket):
                 tts_total_bytes += len(chunk)
                 if not call_active:
                     break
+                chunk = chunk[:len(chunk) & ~1]
+                if not chunk:
+                    continue
                 out_chunk, _ = audioop.ratecv(chunk, 2, 1, 16000, 8000, None)
                 frame = json.dumps({
                     "event": "playAudio",
