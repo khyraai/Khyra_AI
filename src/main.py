@@ -543,13 +543,11 @@ async def vobiz_answer(request: Request):
         return Response(content="OK", media_type="text/plain")
 
     host     = request.headers.get("host", "localhost:8000")
-    scheme   = "ws" if (host.startswith("localhost") or host.startswith("127.0.0.1")) else "wss"
+    scheme   = "wss" if ("ngrok" in host or "khyraai" in host) else "ws"
 
     params = {}
     if caller_phone:
         params["phone"] = caller_phone
-    if did_number:
-        params["did"] = did_number
     stream_url = f"{scheme}://{host}/vobiz-stream"
     if params:
         stream_url += "?" + urllib.parse.urlencode(params)
@@ -562,6 +560,26 @@ async def vobiz_answer(request: Request):
 </Response>
 """
     print(f"[Vobiz] Returning XML with stream_url={stream_url}")
+    return Response(content=xml_response, media_type="application/xml")
+
+
+@app.post("/hangup")
+@app.get("/hangup")
+async def vobiz_hangup(request: Request):
+    """Vobiz Hangup URL — acknowledge hangup events."""
+    return Response(content="OK", media_type="text/plain")
+
+
+@app.post("/test-answer")
+@app.get("/test-answer")
+async def vobiz_test_answer(request: Request):
+    """Debug endpoint — returns a plain <Speak> to verify Vobiz executes XML."""
+    xml_response = """<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Speak>Hello, this is a test. Vobiz is executing XML correctly.</Speak>
+</Response>
+"""
+    print("[Vobiz] /test-answer hit")
     return Response(content=xml_response, media_type="application/xml")
 
 
@@ -612,12 +630,10 @@ async def vobiz_stream(websocket: WebSocket):
     call_active = True
 
     caller_phone = websocket.query_params.get("phone", "unknown")
-    did_number   = websocket.query_params.get("did", "")
-
-    # Resolve client config from DID; fall back to default
-    client_cfg  = (get_config_by_did(did_number) if did_number else None) or get_default_config()
-    client_id   = client_cfg.get("client_id", "default")
-    print(f"\n[Vobiz] Call connected | Caller: {caller_phone} | DID: {did_number} | Client: {client_id}")
+    did_number   = ""       # resolved from Vobiz start event
+    client_cfg   = get_default_config()
+    client_id    = client_cfg.get("client_id", "default")
+    print(f"\n[Vobiz] Call connected | Caller: {caller_phone} | DID: TBD (awaiting start event)")
 
     state = get_initial_state()
     state["phone"]         = caller_phone
@@ -1036,17 +1052,34 @@ async def vobiz_stream(websocket: WebSocket):
 
             if event == "start":
                 info = data.get("start", {})
-                call_sid = info.get("callId", info.get("callSid", "unknown"))
+                call_sid   = info.get("callId",   info.get("callSid",   "unknown"))
                 stream_sid = info.get("streamId", info.get("streamSid", "unknown"))
                 fmt = info.get("mediaFormat", {})
                 vobiz_encoding = fmt.get("encoding", "audio/x-mulaw").lower()
-                print(f"[Vobiz] Stream started â€” callSid={call_sid} encoding={vobiz_encoding}")
+
+                # ── DID resolution from start event ──────────────────────────
+                did_number = (
+                    info.get("to")
+                    or info.get("calledNumber")
+                    or info.get("destination")
+                    or info.get("did")
+                    or info.get("To")
+                    or ""
+                )
+                if did_number:
+                    resolved_cfg = get_config_by_did(did_number)
+                    if resolved_cfg:
+                        client_cfg = resolved_cfg
+                        client_id  = client_cfg.get("client_id", "default")
+                        state["client_id"]     = client_id
+                        state["did_number"]    = did_number
+                        state["connection_id"] = client_cfg.get("connection_id", client_id)
+                print(f"[Vobiz] Stream started — callSid={call_sid} DID={did_number} client={client_id} encoding={vobiz_encoding}")
 
                 session_key = f"vobiz_{call_sid}"
                 saved_state, saved_memory = await asyncio.to_thread(session_store.load_session, session_key)
                 if saved_state:
                     state = saved_state
-                    # Re-apply client identity in case saved state predates multi-client
                     state.setdefault("client_id", client_id)
                     state.setdefault("connection_id", client_cfg.get("connection_id", client_id))
                     memory = saved_memory
