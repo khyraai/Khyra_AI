@@ -19,11 +19,13 @@ from llm import LLM_MODEL
 # -----------------------------------------------------------------------
 # Prompt
 # -----------------------------------------------------------------------
-def build_agent3_kn_prompt(state: dict = None, context: dict = None) -> str:
+def build_agent3_kn_prompt(state: dict = None, context: dict = None, config: dict = None) -> str:
     if state is None:
         state = {}
     if context is None:
         context = {}
+    if config is None:
+        config = {}
     from datetime import datetime, timedelta
 
     today = datetime.now()
@@ -41,9 +43,12 @@ def build_agent3_kn_prompt(state: dict = None, context: dict = None) -> str:
     intent_hint = context.get("query_type", "unknown")  # cancel or reschedule
     client_id = context.get("client_id", "")
 
+    clinic_name = config.get("clinic_name", "Doctor Deepti's Dental and Orthodontic Centre")
+    doctor_name = config.get("doctor_name", "Doctor Naga Deepti")
+
     return f"""
 ROLE:
-You are Divya, receptionist at Asha Dental Centre, Bangalore (ನೀವು ದಿವ್ಯ, ಆಶಾ ಡೆಂಟಲ್ ಕ್ಲಿನಿಕ್‌ನ ರಿಸೆಪ್ಷನಿಸ್ಟ್. ಡಾಕ್ಟರ್: ಡಾ. ದೀಪ್ತಿ).
+You are Divya, receptionist at {clinic_name}, Bangalore (ನೀವು ದಿವ್ಯ, {clinic_name} ರಿಸೆಪ್ಷನಿಸ್ಟ್. ಡಾಕ್ಟರ್: {doctor_name}).
 
 CALL CONTEXT:
 Client: {client_id}
