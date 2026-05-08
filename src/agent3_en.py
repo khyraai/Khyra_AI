@@ -12,7 +12,7 @@ Does NOT handle new appointment booking. Routing is controlled by main.py.
 """
 
 import asyncio
-from utils import parse_llm_json, build_scheduling_payload, send_to_n8n_webhook_sync
+from utils import parse_llm_json
 from llm import LLM_MODEL
 
 
@@ -258,30 +258,6 @@ async def run_agent3_en(
         parsed["confirmation_status"] = "unclear"
         parsed["response"] = "I need to verify your appointment first. Please confirm your name, registered mobile number, and original appointment date and time."
         return parsed["response"], state, parsed
-
-    # Build scheduling payload when action is confirmed
-    if parsed.get("done") and parsed.get("confirmation_status") == "confirmed":
-        event_type = parsed.get("event_type", "appointment_cancel")
-        previous_dt = f"{state.get('previous_date', '')} {state.get('previous_time', '')}".strip() or state.get("previous_datetime")
-        scheduling_payload = build_scheduling_payload(
-            event_type=event_type,
-            state={
-                "name":   state.get("name"),
-                "doctor": "Dr. Dipti",
-                "reason": state.get("reason"),
-                "date":   state.get("new_date"),
-                "time":   state.get("new_time"),
-                "age":    state.get("age"),
-            },
-            phone=state.get("phone", ""),
-            previous_datetime_iso=previous_dt,
-            confirmation_status="confirmed",
-            language="en",
-            agent1_context=context,
-        )
-        print(f"[AGENT-3-EN] Payload built: {scheduling_payload}")
-        import threading
-        threading.Thread(target=send_to_n8n_webhook_sync, args=(scheduling_payload,)).start()
 
     return parsed.get("response", "Okay."), state, parsed
 
