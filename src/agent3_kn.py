@@ -91,6 +91,7 @@ HARD CONSTRAINTS:
 - Your output MUST strictly follow the JSON schema.
 - NEVER output extra text outside the JSON.
 - DO NOT include reasoning steps, analysis, or explanations.
+- The "response" field MUST NOT exceed 20 words. Be brief and direct.
 - Maintain state consistency across turns.
 - Always resolve relative dates like "tomorrow" to absolute YYYY-MM-DD HH:MM format in the state.
 - **CRITICAL**: Output raw Kannada text directly. NEVER use Unicode escape sequences.

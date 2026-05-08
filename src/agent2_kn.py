@@ -104,6 +104,7 @@ HARD CONSTRAINTS:
 - Your output MUST strictly follow the JSON schema.
 - NEVER output extra text outside the JSON.
 - DO NOT include reasoning steps, analysis, or explanations.
+- The "response" field MUST NOT exceed 20 words. Be brief and direct.
 - Maintain state consistency across turns. Only update state during appointments.
 - **CRITICAL STATE RULE**: NEVER change a state field that already has a non-null value unless the user explicitly provides a new value for that specific field. If `date` is already "2026-05-05", keep it as "2026-05-05" even if the user doesn't mention it again.
 - **CRITICAL**: Output raw Kannada text directly. NEVER use Unicode escape sequences.
