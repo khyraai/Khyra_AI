@@ -99,7 +99,7 @@ async def run_agent2(user_text: str, memory: list, state: dict, agent1_context: 
     if (
         parsed.get("action") != "CHECK_AVAILABILITY"
         and _all_appointment_fields_present(state)
-        and state.get("confirmation_pending")
+        and not state.get("confirmation_pending")
         and not parsed.get("done")
     ):
         print("[Agent-2-KN] \u26a0\ufe0f All fields present but CHECK_AVAILABILITY skipped \u2014 forcing it")
@@ -164,7 +164,7 @@ async def run_agent2_en(user_text: str, memory: list, state: dict, agent1_contex
     if (
         parsed.get("action") != "CHECK_AVAILABILITY"
         and _all_appointment_fields_present(state)
-        and state.get("confirmation_pending")
+        and not state.get("confirmation_pending")
         and not parsed.get("done")
     ):
         print("[Agent-2-EN] \u26a0\ufe0f All fields present but CHECK_AVAILABILITY skipped \u2014 forcing it")
