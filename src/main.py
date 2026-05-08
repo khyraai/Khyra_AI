@@ -1144,6 +1144,11 @@ async def vobiz_stream(websocket: WebSocket):
                 stream_sid = info.get("streamId", info.get("streamSid", "unknown"))
                 fmt = info.get("mediaFormat", {})
                 vobiz_encoding = fmt.get("encoding", "audio/x-mulaw").lower()
+                _actual_bps = 8000 if ("mulaw" in vobiz_encoding or "ulaw" in vobiz_encoding) else 16000
+                FLUSH_BYTES      = int(_actual_bps * FLUSH_AFTER_SECS)
+                SILENCE_BYTES    = int(_actual_bps * SILENCE_SECS)
+                MIN_BYTES        = int(_actual_bps * MIN_SPEECH_SECS)
+                MIN_VOICED_BYTES = int(_actual_bps * MIN_VOICED_SECS)
 
                 # ── DID resolution: map from /answer, then start event fields ─
                 did_number = (
