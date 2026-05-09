@@ -25,9 +25,9 @@ Public API
 init_db()
 upsert_client(cfg: dict)
 SessionStore                                — drop-in replacement for utils.py version
-check_availability(target_date, target_time, connection_id=None) -> bool
+check_availability(target_date, target_time, client_id=None) -> bool
 insert_appointment(row: dict) -> str
-list_appointments(connection_id=None) -> list[dict]
+list_appointments(client_id=None) -> list[dict]
 create_appointment(session_id, client_id, state_dict, **kw) -> str
 cancel_or_reschedule_appointment(appointment_id, action, **kw)
 log_call_start(session_id, client_id, **kw) -> int
@@ -468,12 +468,12 @@ def insert_appointment(row: dict) -> str:
     return appt_id
 
 
-def list_appointments(connection_id: Optional[str] = None) -> list:
+def list_appointments(client_id: Optional[str] = None) -> list:
     with get_conn() as cur:
-        if connection_id:
+        if client_id:
             cur.execute(
-                "SELECT * FROM appointments WHERE connection_id = %s ORDER BY start_time",
-                (connection_id,)
+                "SELECT * FROM appointments WHERE client_id = %s ORDER BY start_time",
+                (client_id,)
             )
         else:
             cur.execute("SELECT * FROM appointments ORDER BY start_time")
