@@ -123,13 +123,12 @@ async def run_agent2(user_text: str, memory: list, state: dict, agent1_context: 
                 response = "\u0C95\u0CCD\u0CB7\u0CAE\u0CBF\u0CB8\u0CBF, \u0CAD\u0CBE\u0CA8\u0CC1\u0CB5\u0CBE\u0CB0 \u0C95\u0CCD\u0CB2\u0CBF\u0CA8\u0CBF\u0C95\u0CCD \u0CAE\u0CC1\u0C9A\u0CCD\u0C9A\u0CBF\u0CA6\u0CC6. \u0CA6\u0CAF\u0CB5\u0CBF\u0C9F\u0CCD\u0C9F\u0CC1 \u0CAC\u0CC7\u0CB0\u0CC6 \u0CA6\u0CBF\u0CA8 \u0CB9\u0CC7\u0CB3\u0CBF."
             else:
                 response = "\u0C95\u0CCD\u0CB7\u0CAE\u0CBF\u0CB8\u0CBF, \u0C95\u0CCD\u0CB2\u0CBF\u0CA8\u0CBF\u0C95\u0CCD \u0CB8\u0CAE\u0CAF 10 AM\u200D\u2013\u200D1 PM \u0CAE\u0CA4\u0CCD\u0CA4\u0CC1 4 PM\u200D\u2013\u200D7 PM. \u0CA6\u0CAF\u0CB5\u0CBF\u0C9F\u0CCD\u0C9F\u0CC1 \u0CAC\u0CC7\u0CB0\u0CC6 \u0CB8\u0CAE\u0CAF \u0CB9\u0CC7\u0CB3\u0CBF."
-            state.pop("date", None)
             state.pop("time", None)
             state.pop("confirmation_pending", None)
             parsed = {"response": response, "action": None, "handoff": False, "done": False, "state": state}
             return response, state, parsed
 
-        avail_result = check_availability(raw_date, check_time)
+        avail_result = check_availability(raw_date, check_time, client_id=config.get("client_id") if config else None)
         is_available = avail_result.get('available', True)
         
         if is_available:
@@ -145,7 +144,7 @@ async def run_agent2(user_text: str, memory: list, state: dict, agent1_context: 
             if next_date and next_time:
                 suggestions.append(f"next slot: {next_date} at {next_time}")
             if suggestions:
-                status_msg = f"System: The slot is already BOOKED. Suggest these alternatives â€” " + "; ".join(suggestions) + "."
+                status_msg = f"System: The slot is already BOOKED. Suggest these alternatives â€" " + ";".join(suggestions) + "."
             else:
                 status_msg = "System: The slot is already BOOKED. No alternative slots available."
         
@@ -154,7 +153,7 @@ async def run_agent2(user_text: str, memory: list, state: dict, agent1_context: 
             {"role": "assistant", "content": "Let me check the schedule..."},
             {"role": "user", "content": status_msg}
         ]
-        response, state, parsed = await _run_agent2_kn("à²¦à²¯à²µà²¿à²Ÿà³à²Ÿà³ à²®à³à²‚à²¦à³à²µà²°à²¿à²¯à²¿à²°à²¿.", memory_with_check, state, agent1_context, groq_client, config)
+        response, state, parsed = await _run_agent2_kn("à²¦à²¯à²µà²¿à²Ÿà³à²Ÿà³ à²®à³à²‚à²¦à³à²µà²°à²¿à²¯à²¿à²°à²¿.", memory_with_check, state, agent1_context, groq_client, config)
     return response, state, parsed
 
 async def run_agent2_en(user_text: str, memory: list, state: dict, agent1_context: dict, config: dict = None):
@@ -193,7 +192,7 @@ async def run_agent2_en(user_text: str, memory: list, state: dict, agent1_contex
             return response, state, parsed
 
         tool_state = await _sanitize_state_for_english_tools(state)
-        avail_result = check_availability(check_date, check_time)
+        avail_result = check_availability(check_date, check_time, client_id=config.get("client_id") if config else None)
         is_available = avail_result.get('available', True)
         
         if is_available:
@@ -259,7 +258,7 @@ async def run_agent3_kn(user_text: str, memory: list, state: dict, context: dict
         new_date = state.get("new_date", "")
         new_time = state.get("new_time", "")
         print(f"[Agent-3-KN] Checking slot: {new_date} {new_time}")
-        avail_result = check_availability(new_date, new_time)
+        avail_result = check_availability(new_date, new_time, client_id=config.get("client_id") if config else None)
         is_available = avail_result.get("available", True)
         if is_available:
             status_msg = f"System: The slot on {new_date} at {new_time} is AVAILABLE."
@@ -341,7 +340,7 @@ async def run_agent3_en(user_text: str, memory: list, state: dict, context: dict
         new_date = state.get("new_date", "")
         new_time = state.get("new_time", "")
         print(f"[Agent-3-EN] Checking slot: {new_date} {new_time}")
-        avail_result = check_availability(new_date, new_time)
+        avail_result = check_availability(new_date, new_time, client_id=config.get("client_id") if config else None)
         is_available = avail_result.get("available", True)
         if is_available:
             status_msg = f"System: The slot on {new_date} at {new_time} is AVAILABLE."

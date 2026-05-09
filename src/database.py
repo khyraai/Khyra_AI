@@ -872,7 +872,7 @@ def save_agent_appointment(payload: dict, session_id: str = "", client_id: str =
         return False
 
 
-def get_agent_appointments(start_time_iso: str) -> list:
+def get_agent_appointments(start_time_iso: str, client_id: str = None) -> list:
     """
     Get appointments from SECONDARY agent_appointments table matching start_time.
     Used as fallback when the primary appointments table is unreachable.
@@ -881,11 +881,19 @@ def get_agent_appointments(start_time_iso: str) -> list:
         base_timestamp = start_time_iso.split('+')[0] if '+' in start_time_iso else start_time_iso
         ist_timestamp  = base_timestamp + '+05:30'
         with get_conn() as cur:
-            cur.execute("""
-                SELECT * FROM agent_appointments
-                WHERE (start_time = %s OR start_time = %s OR start_time LIKE %s)
-                AND status NOT IN ('cancelled', 'rescheduled')
-            """, (start_time_iso, ist_timestamp, base_timestamp + '%'))
+            if client_id:
+                cur.execute("""
+                    SELECT * FROM agent_appointments
+                    WHERE (start_time = %s OR start_time = %s OR start_time LIKE %s)
+                    AND status NOT IN ('cancelled', 'rescheduled')
+                    AND client_id = %s
+                """, (start_time_iso, ist_timestamp, base_timestamp + '%', client_id))
+            else:
+                cur.execute("""
+                    SELECT * FROM agent_appointments
+                    WHERE (start_time = %s OR start_time = %s OR start_time LIKE %s)
+                    AND status NOT IN ('cancelled', 'rescheduled')
+                """, (start_time_iso, ist_timestamp, base_timestamp + '%'))
             rows = cur.fetchall()
         return [dict(row) for row in rows]
     except Exception as e:
@@ -1050,7 +1058,7 @@ def reschedule_appointment(appointment_id: str, new_date: str, new_time: str) ->
         return False
 
 
-def _is_slot_booked(target_date: str, target_time: str) -> bool:
+def _is_slot_booked(target_date: str, target_time: str, client_id: str = None) -> bool:
     """Internal helper — checks PRIMARY; falls back to SECONDARY on DB error."""
     iso_timestamp = _parse_to_ist_iso(target_date, target_time)
     if iso_timestamp is None:
@@ -1058,17 +1066,24 @@ def _is_slot_booked(target_date: str, target_time: str) -> bool:
 
     try:
         with get_conn() as cur:
-            cur.execute("""
-                SELECT COUNT(*) AS cnt FROM appointments
-                WHERE start_time = %s AND status NOT IN ('cancelled', 'rescheduled')
-            """, (iso_timestamp,))
+            if client_id:
+                cur.execute("""
+                    SELECT COUNT(*) AS cnt FROM appointments
+                    WHERE start_time = %s AND status NOT IN ('cancelled', 'rescheduled')
+                    AND client_id = %s
+                """, (iso_timestamp, client_id))
+            else:
+                cur.execute("""
+                    SELECT COUNT(*) AS cnt FROM appointments
+                    WHERE start_time = %s AND status NOT IN ('cancelled', 'rescheduled')
+                """, (iso_timestamp,))
             cnt = cur.fetchone()["cnt"]
         return cnt >= MAX_BOOKINGS_PER_SLOT
     except Exception as e:
         print(f"⚠️ [DB] Primary _is_slot_booked error: {e}. Trying secondary...")
 
     try:
-        rows = get_agent_appointments(iso_timestamp)
+        rows = get_agent_appointments(iso_timestamp, client_id)
         return len(rows) >= MAX_BOOKINGS_PER_SLOT
     except Exception:
         return False
@@ -1078,6 +1093,7 @@ def get_next_available_slot(
     target_date: str,
     target_time: str,
     clinic_hours: dict = None,
+    client_id: str = None,
 ) -> tuple:
     """Find the next available slot. Searches up to 14 days ahead."""
     if clinic_hours is None:
@@ -1118,7 +1134,7 @@ def get_next_available_slot(
             for slot_dt in slots:
                 sd = slot_dt.strftime("%d %B %Y")
                 st = slot_dt.strftime("%I:%M %p")
-                if not _is_slot_booked(sd, st):
+                if not _is_slot_booked(sd, st, client_id):
                     return (sd, st)
         return (None, None)
     except Exception as e:
@@ -1130,6 +1146,7 @@ def get_previous_available_slot(
     target_date: str,
     target_time: str,
     clinic_hours: dict = None,
+    client_id: str = None,
 ) -> tuple:
     """Find the previous available slot on the same day before the target time."""
     if clinic_hours is None:
@@ -1167,7 +1184,7 @@ def get_previous_available_slot(
         for slot_dt in slots:
             sd = slot_dt.strftime("%d %B %Y")
             st = slot_dt.strftime("%I:%M %p")
-            if not _is_slot_booked(sd, st):
+            if not _is_slot_booked(sd, st, client_id):
                 return (sd, st)
         return (None, None)
     except Exception as e:
@@ -1175,7 +1192,7 @@ def get_previous_available_slot(
         return (None, None)
 
 
-def check_availability(target_date: str, target_time: str) -> dict:
+def check_availability(target_date: str, target_time: str, client_id: str = None) -> dict:
     """
     Checks if a slot is available. Queries PRIMARY (appointments) table.
     Falls back to SECONDARY (agent_appointments) only on DB error.
@@ -1191,15 +1208,22 @@ def check_availability(target_date: str, target_time: str) -> dict:
         print(f"⚠️ [DB] Could not parse '{target_date} {target_time}' — defaulting to available")
         return result
 
-    print(f"🔍 [DB] check_availability: '{target_date} {target_time}' → {iso_timestamp}")
+    print(f"🔍 [DB] check_availability: '{target_date} {target_time}' → {iso_timestamp} [client_id={client_id}]")
 
     primary_failed = False
     try:
         with get_conn() as cur:
-            cur.execute("""
-                SELECT COUNT(*) AS cnt FROM appointments
-                WHERE start_time = %s AND status NOT IN ('cancelled', 'rescheduled')
-            """, (iso_timestamp,))
+            if client_id:
+                cur.execute("""
+                    SELECT COUNT(*) AS cnt FROM appointments
+                    WHERE start_time = %s AND status NOT IN ('cancelled', 'rescheduled')
+                    AND client_id = %s
+                """, (iso_timestamp, client_id))
+            else:
+                cur.execute("""
+                    SELECT COUNT(*) AS cnt FROM appointments
+                    WHERE start_time = %s AND status NOT IN ('cancelled', 'rescheduled')
+                """, (iso_timestamp,))
             cnt = cur.fetchone()["cnt"]
         if cnt >= MAX_BOOKINGS_PER_SLOT:
             print(f"❌ [DB] PRIMARY: {target_date} {target_time} is FULL ({cnt}/{MAX_BOOKINGS_PER_SLOT})")
@@ -1212,7 +1236,7 @@ def check_availability(target_date: str, target_time: str) -> dict:
 
     if primary_failed:
         try:
-            rows = get_agent_appointments(iso_timestamp)
+            rows = get_agent_appointments(iso_timestamp, client_id)
             if len(rows) >= MAX_BOOKINGS_PER_SLOT:
                 print(f"❌ [DB] SECONDARY: {target_date} {target_time} is FULL ({len(rows)}/{MAX_BOOKINGS_PER_SLOT} fallback)")
                 result["available"] = False
@@ -1222,13 +1246,13 @@ def check_availability(target_date: str, target_time: str) -> dict:
             print(f"⚠️ [DB] Secondary check also failed: {e}")
 
     if not result["available"]:
-        next_date, next_time = get_next_available_slot(target_date, target_time)
+        next_date, next_time = get_next_available_slot(target_date, target_time, client_id=client_id)
         if next_date:
             result["next_date"] = next_date
             result["next_time"] = next_time
             print(f"✅ [DB] Next available: {next_date} at {next_time}")
 
-        prev_date, prev_time = get_previous_available_slot(target_date, target_time)
+        prev_date, prev_time = get_previous_available_slot(target_date, target_time, client_id=client_id)
         if prev_date:
             result["prev_date"] = prev_date
             result["prev_time"] = prev_time
