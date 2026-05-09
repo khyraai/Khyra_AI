@@ -337,9 +337,9 @@ CURRENT STATE:
 # -----------------------------------------------------------------------
 # Runner
 # -----------------------------------------------------------------------
-async def run_agent2_en(user_text: str, memory: list, state: dict, agent1_context: dict, groq_client) -> tuple:
+async def run_agent2_en(user_text: str, memory: list, state: dict, agent1_context: dict, groq_client, config: dict = None) -> tuple:
     """Runs English Agent-2 for the main conversational response."""
-    system_prompt = build_agent2_en_prompt(state=state, agent1_context=agent1_context)
+    system_prompt = build_agent2_en_prompt(config=config, state=state, agent1_context=agent1_context)
     messages = [{"role": "system", "content": system_prompt}] + memory + [{"role": "user", "content": user_text}]
     try:
         chat_completion = await asyncio.wait_for(

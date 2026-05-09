@@ -196,12 +196,13 @@ async def run_agent3_kn(
     state: dict,
     context: dict,
     groq_client,
+    config: dict = None,
 ) -> tuple:
     """
     Runs Kannada Agent-3 for cancel/reschedule flows.
     Returns (response_text, state, parsed).
     """
-    system_prompt = build_agent3_kn_prompt(state, context)
+    system_prompt = build_agent3_kn_prompt(state, context, config)
     messages = [{"role": "system", "content": system_prompt}] + memory + [{"role": "user", "content": user_text}]
 
     try:

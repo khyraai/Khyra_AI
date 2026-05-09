@@ -92,8 +92,8 @@ def _all_appointment_fields_present(st: dict) -> bool:
     """True when name, age, reason, date AND time are all non-empty."""
     return all(st.get(k) for k in ("name", "age", "reason", "date", "time"))
 
-async def run_agent2(user_text: str, memory: list, state: dict, agent1_context: dict):
-    response, state, parsed = await _run_agent2_kn(user_text, memory, state, agent1_context, groq_client)
+async def run_agent2(user_text: str, memory: list, state: dict, agent1_context: dict, config: dict = None):
+    response, state, parsed = await _run_agent2_kn(user_text, memory, state, agent1_context, groq_client, config)
 
     # Guard: LLM skipped CHECK_AVAILABILITY but all fields are filled
     if (
@@ -154,11 +154,11 @@ async def run_agent2(user_text: str, memory: list, state: dict, agent1_context: 
             {"role": "assistant", "content": "Let me check the schedule..."},
             {"role": "user", "content": status_msg}
         ]
-        response, state, parsed = await _run_agent2_kn("à²¦à²¯à²µà²¿à²Ÿà³à²Ÿà³ à²®à³à²‚à²¦à³à²µà²°à²¿à²¯à²¿à²°à²¿.", memory_with_check, state, agent1_context, groq_client)
+        response, state, parsed = await _run_agent2_kn("à²¦à²¯à²µà²¿à²Ÿà³à²Ÿà³ à²®à³à²‚à²¦à³à²µà²°à²¿à²¯à²¿à²°à²¿.", memory_with_check, state, agent1_context, groq_client, config)
     return response, state, parsed
 
-async def run_agent2_en(user_text: str, memory: list, state: dict, agent1_context: dict):
-    response, state, parsed = await _run_agent2_en(user_text, memory, state, agent1_context, groq_client)
+async def run_agent2_en(user_text: str, memory: list, state: dict, agent1_context: dict, config: dict = None):
+    response, state, parsed = await _run_agent2_en(user_text, memory, state, agent1_context, groq_client, config)
 
     # Guard: LLM skipped CHECK_AVAILABILITY but all fields are filled
     if (
@@ -218,11 +218,11 @@ async def run_agent2_en(user_text: str, memory: list, state: dict, agent1_contex
             {"role": "assistant", "content": "Let me check the schedule..."},
             {"role": "user", "content": status_msg}
         ]
-        response, state, parsed = await _run_agent2_en("Please proceed based on the availability.", memory_with_check, state, agent1_context, groq_client)
+        response, state, parsed = await _run_agent2_en("Please proceed based on the availability.", memory_with_check, state, agent1_context, groq_client, config)
     return response, state, parsed
 
-async def run_agent3_kn(user_text: str, memory: list, state: dict, context: dict):
-    response, state, parsed = await _run_agent3_kn(user_text, memory, state, context, groq_client)
+async def run_agent3_kn(user_text: str, memory: list, state: dict, context: dict, config: dict = None):
+    response, state, parsed = await _run_agent3_kn(user_text, memory, state, context, groq_client, config)
 
     # Intercept VERIFY_APPOINTMENT action
     if parsed.get("action") == "VERIFY_APPOINTMENT":
@@ -251,7 +251,7 @@ async def run_agent3_kn(user_text: str, memory: list, state: dict, context: dict
             {"role": "assistant", "content": "Let me verify your appointment..."},
             {"role": "user", "content": status_msg}
         ]
-        response, state, parsed = await _run_agent3_kn("ದಯವಿಟ್ಟು ಮುಂದುವರಿಯಿರಿ.", memory_with_verify, state, context, groq_client)
+        response, state, parsed = await _run_agent3_kn("ದಯವಿಟ್ಟು ಮುಂದುವರಿಯಿರಿ.", memory_with_verify, state, context, groq_client, config)
 
     # Intercept CHECK_AVAILABILITY action (reschedule only)
     if parsed.get("action") == "CHECK_AVAILABILITY":
@@ -274,7 +274,7 @@ async def run_agent3_kn(user_text: str, memory: list, state: dict, context: dict
             {"role": "assistant", "content": "ಲಭ್ಯತೆ ಪರಿಶೀಲಿಸುತ್ತಿದ್ದೇನೆ..."},
             {"role": "user",      "content": status_msg},
         ]
-        response, state, parsed = await _run_agent3_kn("ದಯವಿಟ್ಟು ಮುಂದುವರಿಯಿರಿ.", memory_with_avail, state, context, groq_client)
+        response, state, parsed = await _run_agent3_kn("ದಯವಿಟ್ಟು ಮುಂದುವರಿಯಿರಿ.", memory_with_avail, state, context, groq_client, config)
 
     # When confirmed, update DB
     if parsed.get("done") and parsed.get("confirmation_status") == "confirmed" and state.get("appointment_id"):
@@ -303,8 +303,8 @@ def _normalize_phone_for_lookup(phone: str) -> str:
     return phone
 
 
-async def run_agent3_en(user_text: str, memory: list, state: dict, context: dict):
-    response, state, parsed = await _run_agent3_en(user_text, memory, state, context, groq_client)
+async def run_agent3_en(user_text: str, memory: list, state: dict, context: dict, config: dict = None):
+    response, state, parsed = await _run_agent3_en(user_text, memory, state, context, groq_client, config)
 
     # Intercept VERIFY_APPOINTMENT action
     if parsed.get("action") == "VERIFY_APPOINTMENT":
@@ -333,7 +333,7 @@ async def run_agent3_en(user_text: str, memory: list, state: dict, context: dict
             {"role": "assistant", "content": "Let me verify your appointment..."},
             {"role": "user", "content": status_msg}
         ]
-        response, state, parsed = await _run_agent3_en("Please proceed based on the verification result.", memory_with_verify, state, context, groq_client)
+        response, state, parsed = await _run_agent3_en("Please proceed based on the verification result.", memory_with_verify, state, context, groq_client, config)
 
     # Intercept CHECK_AVAILABILITY action (reschedule only)
     if parsed.get("action") == "CHECK_AVAILABILITY":
@@ -356,7 +356,7 @@ async def run_agent3_en(user_text: str, memory: list, state: dict, context: dict
             {"role": "assistant", "content": "Let me check availability for that slot..."},
             {"role": "user",      "content": status_msg},
         ]
-        response, state, parsed = await _run_agent3_en("Please proceed based on the availability result.", memory_with_avail, state, context, groq_client)
+        response, state, parsed = await _run_agent3_en("Please proceed based on the availability result.", memory_with_avail, state, context, groq_client, config)
 
     # When confirmed, update appointment status in database
     if parsed.get("done") and parsed.get("confirmation_status") == "confirmed":
@@ -908,9 +908,9 @@ async def vobiz_stream(websocket: WebSocket):
                     agent1_ran = True
                     print(f"[VOBIZ ROUTER] Agent-3 ({effective_lang}) | Intent: cancel_reschedule")
                     if effective_lang == "en":
-                        response_text, agent3_state, parsed = await run_agent3_en(user_text, memory, agent3_state, agent1_context)
+                        response_text, agent3_state, parsed = await run_agent3_en(user_text, memory, agent3_state, agent1_context, config=client_cfg)
                     else:
-                        response_text, agent3_state, parsed = await run_agent3_kn(user_text, memory, agent3_state, agent1_context)
+                        response_text, agent3_state, parsed = await run_agent3_kn(user_text, memory, agent3_state, agent1_context, config=client_cfg)
                 elif intent == "emergency":
                     agent1_ran = True
                     parsed = agent1_parsed
@@ -931,22 +931,22 @@ async def vobiz_stream(websocket: WebSocket):
                 else:
                     print(f"[VOBIZ ROUTER] Agent-2 ({effective_lang}) | Intent: {intent}")
                     if effective_lang == "en":
-                        response_text, state, parsed = await run_agent2_en(user_text, memory, state, agent1_context)
+                        response_text, state, parsed = await run_agent2_en(user_text, memory, state, agent1_context, config=client_cfg)
                     else:
-                        response_text, state, parsed = await run_agent2(user_text, memory, state, agent1_context)
+                        response_text, state, parsed = await run_agent2(user_text, memory, state, agent1_context, config=client_cfg)
                     agent1_ran = True
             else:
                 if in_agent3:
                     print(f"[VOBIZ ROUTER] Agent-3 ({effective_lang}) | continuation")
                     if effective_lang == "en":
-                        response_text, agent3_state, parsed = await run_agent3_en(user_text, memory, agent3_state, agent1_context)
+                        response_text, agent3_state, parsed = await run_agent3_en(user_text, memory, agent3_state, agent1_context, config=client_cfg)
                     else:
-                        response_text, agent3_state, parsed = await run_agent3_kn(user_text, memory, agent3_state, agent1_context)
+                        response_text, agent3_state, parsed = await run_agent3_kn(user_text, memory, agent3_state, agent1_context, config=client_cfg)
                 else:
                     if effective_lang == "en":
-                        response_text, state, parsed = await run_agent2_en(user_text, memory, state, agent1_context)
+                        response_text, state, parsed = await run_agent2_en(user_text, memory, state, agent1_context, config=client_cfg)
                     else:
-                        response_text, state, parsed = await run_agent2(user_text, memory, state, agent1_context)
+                        response_text, state, parsed = await run_agent2(user_text, memory, state, agent1_context, config=client_cfg)
 
                     # Agent-2 handoff → switch to Agent-3 for cancel/reschedule
                     if parsed.get("handoff"):
