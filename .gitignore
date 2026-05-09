@@ -1,6 +1,9 @@
 # Environment — contains real API keys, never commit
 .env
 
+# Client config — contains real phone numbers (DIDs, doctor mobile, emergency numbers)
+src/client_config.json
+
 # Python
 __pycache__/
 *.py[cod]

@@ -1,0 +1,16 @@
+{
+  "+91XXXXXXXXXX": {
+    "client_id": "your_client_id",
+    "clinic_name": "Your Clinic Name",
+    "doctor_name": "Doctor Full Name",
+    "doctor_qualifications": "Your qualifications",
+    "address": "Your clinic address",
+    "timings": "Monday to Saturday — 10:00 AM to 1:00 PM and 4:00 PM to 7:00 PM. Closed on Sunday.",
+    "doctor_mobile": "+91XXXXXXXXXX",
+    "consultation_fee_min": 200,
+    "consultation_fee_max": 300,
+    "default_language": "kn",
+    "emergency_transfer_number": "+91XXXXXXXXXX",
+    "connection_id": "your_client_id"
+  }
+}

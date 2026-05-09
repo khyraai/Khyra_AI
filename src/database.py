@@ -507,8 +507,8 @@ def create_appointment(
             INSERT INTO appointments
                 (id, session_id, connection_id, patient_name, patient_phone,
                  start_time, appointment_type, status, doctor_name,
-                 reason, booked_via, agent_notes, created_at, updated_at)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                 reason, booked_via, agent_notes, client_id, created_at, updated_at)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """, (
             appt_id,
             session_id,
@@ -522,6 +522,7 @@ def create_appointment(
             state_dict.get("reason", ""),
             "agent",
             f"lang={language} session={session_id}",
+            client_id,
             now,
             now,
         ))
