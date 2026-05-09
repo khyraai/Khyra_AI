@@ -272,6 +272,7 @@ _SCHEMA_STATEMENTS = [
     "ALTER TABLE appointments      ADD COLUMN IF NOT EXISTS sync_error     TEXT",
     "ALTER TABLE appointments      ADD COLUMN IF NOT EXISTS retry_count    INTEGER DEFAULT 0",
     "ALTER TABLE call_logs         ADD COLUMN IF NOT EXISTS total_tokens   INTEGER DEFAULT 0",
+    "ALTER TABLE call_logs         ADD COLUMN IF NOT EXISTS transcript     TEXT",
     # Multi-client isolation migrations
     "ALTER TABLE appointments      ADD COLUMN IF NOT EXISTS client_id      TEXT",
     "ALTER TABLE agent_appointments ADD COLUMN IF NOT EXISTS client_id     TEXT",
@@ -590,6 +591,7 @@ def log_call_end(
     *,
     appointment_id: str = "",
     language: str = "",
+    transcript: str = "",
 ):
     cost_dict = cost_dict or {}
     now = datetime.now().isoformat()
@@ -611,7 +613,8 @@ def log_call_end(
             UPDATE call_logs
             SET call_end=%s, duration_sec=%s, outcome=%s, appointment_id=%s,
                 stt_cost_inr=%s, tts_cost_inr=%s, llm_cost_inr=%s, total_cost_inr=%s,
-                language=COALESCE(NULLIF(%s, ''), language)
+                language=COALESCE(NULLIF(%s, ''), language),
+                transcript=%s
             WHERE session_id=%s
         """, (
             now,
@@ -623,6 +626,7 @@ def log_call_end(
             float(cost_dict.get("llm", 0.0)),
             float(cost_dict.get("total", 0.0)),
             language,
+            transcript,
             session_id,
         ))
 

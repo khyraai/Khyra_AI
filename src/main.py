@@ -38,7 +38,7 @@ from stt import (
     pcm16_to_wav_bytes,
 )
 from tts import cartesia_tts_collect, cartesia_tts_chunked, cartesia_tts_stream
-from database import check_availability, verify_appointment_for_cancellation, update_appointment_status, reschedule_appointment, log_call_start, log_llm_event
+from database import check_availability, verify_appointment_for_cancellation, update_appointment_status, reschedule_appointment, log_call_start, log_call_end, log_llm_event
 from client_config import get_config_by_did, get_default_config
 
 # -----------------------------
@@ -717,6 +717,7 @@ async def vobiz_stream(websocket: WebSocket):
     state["did_number"]    = did_number
     state["connection_id"] = client_cfg.get("connection_id", client_id)
     memory = []
+    transcript_log = []
 
     session_key = "vobiz_call"
     vobiz_encoding = "audio/x-mulaw"
@@ -983,6 +984,8 @@ async def vobiz_stream(websocket: WebSocket):
 
             memory.append({"role": "user", "content": user_text})
             memory.append({"role": "assistant", "content": response_text})
+            transcript_log.append({"speaker": "user", "text": user_text})
+            transcript_log.append({"speaker": "bot",  "text": response_text})
             if len(memory) > 12:
                 memory = memory[-12:]
 
@@ -1228,6 +1231,7 @@ async def vobiz_stream(websocket: WebSocket):
                             await websocket.send_text(frame)
                         if welcome_bytes:
                             print(f"[Vobiz] Sent welcome greeting via playAudio ({welcome_bytes}B)")
+                            transcript_log.append({"speaker": "bot", "text": welcome_text})
                             asyncio.create_task(asyncio.to_thread(log_llm_event, {
                                 "session_id":   session_key,
                                 "client_id":    client_id,
@@ -1298,6 +1302,18 @@ async def vobiz_stream(websocket: WebSocket):
                 asyncio.create_task(asyncio.to_thread(send_to_n8n_webhook_sync, pending_payload))
             except Exception as e:
                 print(f"[Vobiz] Webhook send error: {e}")
+
+        try:
+            if call_sid and call_sid != "unknown":
+                outcome = "booked" if state.get("appointment_id") else "enquiry"
+                await asyncio.to_thread(
+                    log_call_end, call_sid, outcome,
+                    language=session_language or "",
+                    appointment_id=state.get("appointment_id", ""),
+                    transcript=json.dumps(transcript_log, ensure_ascii=False),
+                )
+        except Exception as e:
+            print(f"[Vobiz] log_call_end error: {e}")
 
         try:
             if session_key and session_key != "unknown":
