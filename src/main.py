@@ -38,7 +38,7 @@ from stt import (
     pcm16_to_wav_bytes,
 )
 from tts import cartesia_tts_collect, cartesia_tts_chunked, cartesia_tts_stream
-from database import check_availability, verify_appointment_for_cancellation, update_appointment_status, reschedule_appointment, log_call_start
+from database import check_availability, verify_appointment_for_cancellation, update_appointment_status, reschedule_appointment, log_call_start, log_llm_event
 from client_config import get_config_by_did, get_default_config
 
 # -----------------------------
@@ -964,6 +964,19 @@ async def vobiz_stream(websocket: WebSocket):
 
             llm_time = time.time() - t1
             print(f"[Vobiz][LLM] '{response_text}' in {llm_time:.3f}s")
+
+            agent_name = (f"agent3_{effective_lang}") if in_agent3 else (f"agent2_{effective_lang}")
+            asyncio.create_task(asyncio.to_thread(log_llm_event, {
+                "session_id":   session_key,
+                "client_id":    client_id,
+                "ts":           t1,
+                "agent":        agent_name,
+                "model":        LLM_MODEL,
+                "latency_ms":   round(llm_time * 1000, 2),
+                "user_input":   user_text,
+                "llm_response": response_text,
+                "success":      bool(response_text),
+            }))
 
             if not call_active:
                 return
