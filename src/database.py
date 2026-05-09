@@ -1090,13 +1090,65 @@ def _is_slot_booked(target_date: str, target_time: str, client_id: str = None) -
         return False
 
 
+def _get_fully_booked_slots(iso_timestamps: list, client_id: str = None) -> set:
+    """
+    Single batch query returning which of the given ISO start_times are fully booked.
+    Replaces N individual _is_slot_booked calls with one round-trip.
+    Falls back to agent_appointments on primary error.
+    """
+    if not iso_timestamps:
+        return set()
+    try:
+        with get_conn() as cur:
+            if client_id:
+                cur.execute("""
+                    SELECT start_time FROM appointments
+                    WHERE start_time = ANY(%s)
+                    AND status NOT IN ('cancelled', 'rescheduled')
+                    AND client_id = %s
+                    GROUP BY start_time HAVING COUNT(*) >= %s
+                """, (iso_timestamps, client_id, MAX_BOOKINGS_PER_SLOT))
+            else:
+                cur.execute("""
+                    SELECT start_time FROM appointments
+                    WHERE start_time = ANY(%s)
+                    AND status NOT IN ('cancelled', 'rescheduled')
+                    GROUP BY start_time HAVING COUNT(*) >= %s
+                """, (iso_timestamps, MAX_BOOKINGS_PER_SLOT))
+            rows = cur.fetchall()
+        return {r["start_time"] for r in rows}
+    except Exception as e:
+        print(f"⚠️ [DB] _get_fully_booked_slots primary error: {e}. Trying secondary...")
+    try:
+        with get_conn() as cur:
+            if client_id:
+                cur.execute("""
+                    SELECT start_time FROM agent_appointments
+                    WHERE start_time = ANY(%s)
+                    AND status NOT IN ('cancelled', 'rescheduled')
+                    AND client_id = %s
+                    GROUP BY start_time HAVING COUNT(*) >= %s
+                """, (iso_timestamps, client_id, MAX_BOOKINGS_PER_SLOT))
+            else:
+                cur.execute("""
+                    SELECT start_time FROM agent_appointments
+                    WHERE start_time = ANY(%s)
+                    AND status NOT IN ('cancelled', 'rescheduled')
+                    GROUP BY start_time HAVING COUNT(*) >= %s
+                """, (iso_timestamps, MAX_BOOKINGS_PER_SLOT))
+            rows = cur.fetchall()
+        return {r["start_time"] for r in rows}
+    except Exception:
+        return set()
+
+
 def get_next_available_slot(
     target_date: str,
     target_time: str,
     clinic_hours: dict = None,
     client_id: str = None,
 ) -> tuple:
-    """Find the next available slot. Searches up to 14 days ahead."""
+    """Find the next available slot. Searches up to 14 days ahead using a single batch query."""
     if clinic_hours is None:
         clinic_hours = {
             "morning_start": 10, "morning_end": 13,
@@ -1115,28 +1167,36 @@ def get_next_available_slot(
             return (None, None)
 
         current_dt = _IST.localize(naive_dt)
+
+        # Collect all candidate slots across 14 days first
+        all_slots = []
         for day_offset in range(14):
             check_dt = current_dt + timedelta(days=day_offset)
             if check_dt.weekday() == 6:
                 continue
-            slots = []
             for hour in range(clinic_hours["morning_start"], clinic_hours["morning_end"]):
                 for minute in [0, 30]:
                     slot_dt = check_dt.replace(hour=hour, minute=minute, second=0, microsecond=0)
                     if day_offset == 0 and slot_dt <= current_dt:
                         continue
-                    slots.append(slot_dt)
+                    all_slots.append(slot_dt)
             for hour in range(clinic_hours["evening_start"], clinic_hours["evening_end"]):
                 for minute in [0, 30]:
                     slot_dt = check_dt.replace(hour=hour, minute=minute, second=0, microsecond=0)
                     if day_offset == 0 and slot_dt <= current_dt:
                         continue
-                    slots.append(slot_dt)
-            for slot_dt in slots:
-                sd = slot_dt.strftime("%d %B %Y")
-                st = slot_dt.strftime("%I:%M %p")
-                if not _is_slot_booked(sd, st, client_id):
-                    return (sd, st)
+                    all_slots.append(slot_dt)
+
+        if not all_slots:
+            return (None, None)
+
+        # One batch query instead of up to 140 individual round-trips
+        iso_list = [s.isoformat() for s in all_slots]
+        booked = _get_fully_booked_slots(iso_list, client_id)
+
+        for slot_dt in all_slots:
+            if slot_dt.isoformat() not in booked:
+                return (slot_dt.strftime("%d %B %Y"), slot_dt.strftime("%I:%M %p"))
         return (None, None)
     except Exception as e:
         print(f"❌ [DB] get_next_available_slot error: {e}")
@@ -1149,7 +1209,7 @@ def get_previous_available_slot(
     clinic_hours: dict = None,
     client_id: str = None,
 ) -> tuple:
-    """Find the previous available slot on the same day before the target time."""
+    """Find the previous available slot on the same day before the target time. Uses a single batch query."""
     if clinic_hours is None:
         clinic_hours = {
             "morning_start": 10, "morning_end": 13,
@@ -1172,21 +1232,27 @@ def get_previous_available_slot(
         if target_dt.weekday() == 6:
             return (None, None)
 
-        slots = []
+        all_slots = []
         for hour in range(clinic_hours["morning_start"], clinic_hours["morning_end"]):
             for minute in [0, 30]:
-                slots.append(target_dt.replace(hour=hour, minute=minute, second=0, microsecond=0))
+                all_slots.append(target_dt.replace(hour=hour, minute=minute, second=0, microsecond=0))
         for hour in range(clinic_hours["evening_start"], clinic_hours["evening_end"]):
             for minute in [0, 30]:
-                slots.append(target_dt.replace(hour=hour, minute=minute, second=0, microsecond=0))
+                all_slots.append(target_dt.replace(hour=hour, minute=minute, second=0, microsecond=0))
 
-        slots = [s for s in slots if s < target_dt and s > now_dt]
-        slots.sort(reverse=True)
-        for slot_dt in slots:
-            sd = slot_dt.strftime("%d %B %Y")
-            st = slot_dt.strftime("%I:%M %p")
-            if not _is_slot_booked(sd, st, client_id):
-                return (sd, st)
+        all_slots = [s for s in all_slots if s < target_dt and s > now_dt]
+        all_slots.sort(reverse=True)
+
+        if not all_slots:
+            return (None, None)
+
+        # One batch query instead of per-slot round-trips
+        iso_list = [s.isoformat() for s in all_slots]
+        booked = _get_fully_booked_slots(iso_list, client_id)
+
+        for slot_dt in all_slots:
+            if slot_dt.isoformat() not in booked:
+                return (slot_dt.strftime("%d %B %Y"), slot_dt.strftime("%I:%M %p"))
         return (None, None)
     except Exception as e:
         print(f"❌ [DB] get_previous_available_slot error: {e}")
