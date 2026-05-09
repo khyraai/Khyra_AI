@@ -370,8 +370,8 @@ async def run_agent3_en(user_text: str, memory: list, state: dict, context: dict
     
     return response, state, parsed
 
-async def run_stt_http(audio_bytes: bytes, filename: str = "audio.wav", language_code: str = "unknown"):
-    return await _run_stt_http(audio_bytes, sarvam_api_key, filename, language_code=language_code)
+async def run_stt_http(audio_bytes: bytes, filename: str = "audio.wav", language_code: str = "unknown", *, session_id: str = "", client_id: str = "default"):
+    return await _run_stt_http(audio_bytes, sarvam_api_key, filename, language_code=language_code, session_id=session_id, client_id=client_id)
 
 def _normalize_streaming_lang_to_en_or_kn(detected_lang: str, transcript: str) -> str:
     dl = (detected_lang or "").strip().lower()
@@ -828,6 +828,8 @@ async def vobiz_stream(websocket: WebSocket):
             user_text, detected_lang = await run_stt_http(
                 wav_bytes,
                 language_code=session_language if session_language else "unknown",
+                session_id=session_key,
+                client_id=client_id,
             )
             stt_time = time.time() - t0
             print(f"[Vobiz][STT] '{user_text}' ({detected_lang}) in {stt_time:.3f}s")
