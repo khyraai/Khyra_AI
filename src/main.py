@@ -1228,6 +1228,17 @@ async def vobiz_stream(websocket: WebSocket):
                             await websocket.send_text(frame)
                         if welcome_bytes:
                             print(f"[Vobiz] Sent welcome greeting via playAudio ({welcome_bytes}B)")
+                            asyncio.create_task(asyncio.to_thread(log_llm_event, {
+                                "session_id":   session_key,
+                                "client_id":    client_id,
+                                "ts":           time.time(),
+                                "agent":        "greeting",
+                                "model":        "",
+                                "latency_ms":   0.0,
+                                "user_input":   "",
+                                "llm_response": welcome_text,
+                                "success":      True,
+                            }))
                     except Exception as e:
                         print(f"[Vobiz] Welcome greeting error: {e}")
                     finally:
