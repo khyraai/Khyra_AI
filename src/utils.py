@@ -15,9 +15,6 @@ import json
 import re
 from datetime import datetime
 
-# Import database functions
-from database import save_agent_appointment
-
 
 # -----------------------------------------------------------------------
 # Security Guardrails — pre-LLM filter
@@ -229,10 +226,6 @@ def build_scheduling_payload(
 
     print(f"[SCHEDULING PAYLOAD]\n{json.dumps(payload, indent=2, ensure_ascii=False)}")
 
-    # Save to secondary agent_appointments table in PostgreSQL
-    if event_type == "appointment_create":
-        save_agent_appointment(payload, session_id=state.get("call_sid", ""), client_id=resolved_client_id)
-    
     return payload
 
 

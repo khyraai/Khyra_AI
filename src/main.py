@@ -38,7 +38,7 @@ from stt import (
     pcm16_to_wav_bytes,
 )
 from tts import cartesia_tts_collect, cartesia_tts_chunked, cartesia_tts_stream
-from database import check_availability, verify_appointment_for_cancellation, update_appointment_status, reschedule_appointment, log_call_start, log_call_end, log_llm_event
+from database import check_availability, verify_appointment_for_cancellation, update_appointment_status, reschedule_appointment, log_call_start, log_call_end, log_llm_event, save_agent_appointment
 from client_config import get_config_by_did, get_default_config
 
 # -----------------------------
@@ -992,7 +992,6 @@ async def vobiz_stream(websocket: WebSocket):
             # ── Agent-2: new appointment ──────────────────────────────────
             if (
                 not in_agent3
-                and pending_payload is None
                 and not pending_payload_sent
                 and parsed.get("done")
                 and state.get("name")
@@ -1015,7 +1014,6 @@ async def vobiz_stream(websocket: WebSocket):
             # ── Agent-3: cancel or reschedule ─────────────────────────────
             if (
                 in_agent3
-                and pending_payload is None
                 and not pending_payload_sent
                 and parsed.get("done")
                 and parsed.get("confirmation_status") == "confirmed"
@@ -1300,6 +1298,10 @@ async def vobiz_stream(websocket: WebSocket):
             try:
                 pending_payload_sent = True
                 asyncio.create_task(asyncio.to_thread(send_to_n8n_webhook_sync, pending_payload))
+                asyncio.create_task(asyncio.to_thread(
+                    save_agent_appointment, pending_payload,
+                    session_key, client_id,
+                ))
             except Exception as e:
                 print(f"[Vobiz] Webhook send error: {e}")
 

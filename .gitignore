@@ -29,6 +29,11 @@ build/
 .DS_Store
 Thumbs.db
 
+# Local reference docs — not for version control
+db_schema.md
+sim_report.md
+integration_report.md
+
 # Logs / local DBs (generated at runtime)
 .logs/
 *.db

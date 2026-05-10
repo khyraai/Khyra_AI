@@ -121,20 +121,23 @@ _SCHEMA_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_appt_session_id    ON appointments(session_id)",
     """
     CREATE TABLE IF NOT EXISTS agent_appointments (
-        id               TEXT PRIMARY KEY,
-        session_id       TEXT,
-        patient_name     TEXT,
-        patient_phone    TEXT,
-        start_time       TEXT,
-        end_time         TEXT,
-        appointment_type TEXT,
-        status           TEXT DEFAULT 'scheduled',
-        doctor_name      TEXT,
-        reason           TEXT,
-        booked_via       TEXT DEFAULT 'voice_assistant',
-        agent_notes      TEXT,
-        created_at       TEXT DEFAULT (NOW()::TEXT),
-        updated_at       TEXT DEFAULT (NOW()::TEXT)
+        id                TEXT PRIMARY KEY,
+        session_id        TEXT,
+        client_id         TEXT,
+        event_type        TEXT DEFAULT 'appointment_create',
+        patient_name      TEXT,
+        patient_phone     TEXT,
+        start_time        TEXT,
+        end_time          TEXT,
+        previous_datetime TEXT,
+        appointment_type  TEXT,
+        status            TEXT DEFAULT 'scheduled',
+        doctor_name       TEXT,
+        reason            TEXT,
+        booked_via        TEXT DEFAULT 'voice_assistant',
+        agent_notes       TEXT,
+        created_at        TEXT DEFAULT (NOW()::TEXT),
+        updated_at        TEXT DEFAULT (NOW()::TEXT)
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_agent_appt_start_time ON agent_appointments(start_time)",
@@ -282,6 +285,8 @@ _SCHEMA_STATEMENTS = [
     # Multi-client isolation migrations
     "ALTER TABLE appointments      ADD COLUMN IF NOT EXISTS client_id      TEXT",
     "ALTER TABLE agent_appointments ADD COLUMN IF NOT EXISTS client_id     TEXT",
+    "ALTER TABLE agent_appointments ADD COLUMN IF NOT EXISTS event_type    TEXT",
+    "ALTER TABLE agent_appointments ADD COLUMN IF NOT EXISTS previous_datetime TEXT",
     "ALTER TABLE reschedules       ADD COLUMN IF NOT EXISTS session_id     TEXT",
     "ALTER TABLE reschedules       ADD COLUMN IF NOT EXISTS client_id      TEXT",
     "CREATE INDEX IF NOT EXISTS idx_appt_client_id        ON appointments(client_id)",
@@ -436,7 +441,7 @@ def insert_appointment(row: dict) -> str:
                 (id, session_id, client_id, connection_id, google_event_id, patient_name, patient_phone,
                  start_time, end_time, appointment_type, status, doctor_name,
                  reason, booked_via, agent_notes, created_at, updated_at)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT(id) DO UPDATE SET
                 session_id=EXCLUDED.session_id,
                 client_id=EXCLUDED.client_id,
@@ -834,25 +839,30 @@ def save_agent_appointment(payload: dict, session_id: str = "", client_id: str =
         with get_conn() as cur:
             cur.execute("""
                 INSERT INTO agent_appointments (
-                    id, session_id, client_id, patient_name, patient_phone, start_time, end_time,
+                    id, session_id, client_id, event_type,
+                    patient_name, patient_phone, start_time, end_time, previous_datetime,
                     appointment_type, status, doctor_name, reason,
                     booked_via, agent_notes, created_at, updated_at
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT(id) DO UPDATE SET
                     session_id=EXCLUDED.session_id,
                     client_id=EXCLUDED.client_id,
+                    event_type=EXCLUDED.event_type,
                     start_time=EXCLUDED.start_time,
                     end_time=EXCLUDED.end_time,
+                    previous_datetime=EXCLUDED.previous_datetime,
                     status=EXCLUDED.status,
                     updated_at=EXCLUDED.updated_at
             """, (
                 payload.get("id", ""),
                 session_id or payload.get("session_id", ""),
                 resolved_client_id,
+                payload.get("event_type", "appointment_create"),
                 payload.get("patient_name", ""),
                 payload.get("patient_phone", ""),
                 start_time,
                 end_time,
+                payload.get("previous_datetime", ""),
                 payload.get("appointment_type", "consultation"),
                 payload.get("status", "scheduled"),
                 payload.get("doctor_name", ""),
