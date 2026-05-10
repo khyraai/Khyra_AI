@@ -100,6 +100,7 @@ async def run_agent2(user_text: str, memory: list, state: dict, agent1_context: 
         parsed.get("action") != "CHECK_AVAILABILITY"
         and _all_appointment_fields_present(state)
         and not state.get("confirmation_pending")
+        and not state.get("availability_checked")
         and not parsed.get("done")
     ):
         print("[Agent-2-KN] \u26a0\ufe0f All fields present but CHECK_AVAILABILITY skipped \u2014 forcing it")
@@ -160,6 +161,7 @@ async def run_agent2(user_text: str, memory: list, state: dict, agent1_context: 
             {"role": "assistant", "content": "Let me check the schedule..."},
             {"role": "user", "content": status_msg}
         ]
+        state["availability_checked"] = True
         response, state, parsed = await _run_agent2_kn("ದಯವಿಟ್ಟು ಮುಂದುವರಿಯಿರಿ.", memory_with_check, state, agent1_context, groq_client, config)
     return response, state, parsed
 
@@ -171,6 +173,7 @@ async def run_agent2_en(user_text: str, memory: list, state: dict, agent1_contex
         parsed.get("action") != "CHECK_AVAILABILITY"
         and _all_appointment_fields_present(state)
         and not state.get("confirmation_pending")
+        and not state.get("availability_checked")
         and not parsed.get("done")
     ):
         print("[Agent-2-EN] \u26a0\ufe0f All fields present but CHECK_AVAILABILITY skipped \u2014 forcing it")
@@ -231,6 +234,7 @@ async def run_agent2_en(user_text: str, memory: list, state: dict, agent1_contex
             {"role": "assistant", "content": "Let me check the schedule..."},
             {"role": "user", "content": status_msg}
         ]
+        state["availability_checked"] = True
         response, state, parsed = await _run_agent2_en("Please proceed based on the availability.", memory_with_check, state, agent1_context, groq_client, config)
     return response, state, parsed
 
