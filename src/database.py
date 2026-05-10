@@ -620,6 +620,7 @@ def log_call_end(
             except Exception:
                 pass
 
+        print(f"[DB] log_call_end: session={session_id} outcome={outcome} duration={round(duration,2)}s")
         cur.execute("""
             UPDATE call_logs
             SET call_end=%s, duration_sec=%s, outcome=%s, appointment_id=%s,
@@ -640,6 +641,7 @@ def log_call_end(
             transcript,
             session_id,
         ))
+        print(f"[DB] log_call_end: updated {cur.rowcount} row(s)")
 
 
 # ---------------------------------------------------------------------------
@@ -843,7 +845,7 @@ def save_agent_appointment(payload: dict, session_id: str = "", client_id: str =
                     patient_name, patient_phone, start_time, end_time, previous_datetime,
                     appointment_type, status, doctor_name, reason,
                     booked_via, agent_notes, created_at, updated_at
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT(id) DO UPDATE SET
                     session_id=EXCLUDED.session_id,
                     client_id=EXCLUDED.client_id,

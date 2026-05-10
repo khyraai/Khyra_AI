@@ -133,7 +133,7 @@ async def run_agent2(user_text: str, memory: list, state: dict, agent1_context: 
         is_available = avail_result.get('available', True)
 
         if is_available:
-            status_msg = "System: The slot is AVAILABLE."
+            status_msg = f"System: {check_time} on {raw_date} is CONFIRMED AVAILABLE. Proceed to confirm this exact slot with the user."
         else:
             morning_date, morning_time = get_next_available_slot(
                 raw_date, check_time,
@@ -204,7 +204,7 @@ async def run_agent2_en(user_text: str, memory: list, state: dict, agent1_contex
         is_available = avail_result.get('available', True)
 
         if is_available:
-            status_msg = "System: The slot is AVAILABLE."
+            status_msg = f"System: {check_time} on {check_date} is CONFIRMED AVAILABLE. Proceed to confirm this exact slot with the user."
         else:
             morning_date, morning_time = get_next_available_slot(
                 check_date, check_time,
