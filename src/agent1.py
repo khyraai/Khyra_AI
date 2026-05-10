@@ -175,8 +175,8 @@ Detect the dominant language of the input and return it as the "language" field.
 
 Rules:
 1. If input contains ONLY greeting words (hi, hello, namaskara, etc.):
-   → language = "unknown"
-   (Greetings do NOT determine the session language)
+   → language = "kn"
+   (Default to clinic language for pure greetings)
 
 2. If input contains meaningful content:
    → Kannada script OR Kanglish words (beku, madbeku, eshtu, ide, etc.) → "kn"
@@ -214,7 +214,7 @@ Standard Output:
   },
   "summary": "<short english summary>",
   "response": "<Kannada greeting or empty>",
-  "language": "kn | en | unknown"
+  "language": "kn | en"
 }
 
 EMERGENCY ONLY Output (Ignore Standard Schema):

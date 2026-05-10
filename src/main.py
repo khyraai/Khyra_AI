@@ -38,7 +38,7 @@ from stt import (
     pcm16_to_wav_bytes,
 )
 from tts import cartesia_tts_collect, cartesia_tts_chunked, cartesia_tts_stream
-from database import check_availability, verify_appointment_for_cancellation, update_appointment_status, reschedule_appointment, log_call_start, log_call_end, log_llm_event, save_agent_appointment
+from database import check_availability, get_next_available_slot, verify_appointment_for_cancellation, update_appointment_status, reschedule_appointment, log_call_start, log_call_end, log_llm_event, save_agent_appointment
 from client_config import get_config_by_did, get_default_config
 
 # -----------------------------
@@ -128,32 +128,39 @@ async def run_agent2(user_text: str, memory: list, state: dict, agent1_context: 
             parsed = {"response": response, "action": None, "handoff": False, "done": False, "state": state}
             return response, state, parsed
 
-        avail_result = check_availability(raw_date, check_time, client_id=config.get("client_id") if config else None)
+        _client_id_kn = config.get("client_id") if config else None
+        avail_result = check_availability(raw_date, check_time, client_id=_client_id_kn)
         is_available = avail_result.get('available', True)
-        
+
         if is_available:
             status_msg = "System: The slot is AVAILABLE."
         else:
-            next_date = avail_result.get('next_date')
-            next_time = avail_result.get('next_time')
-            prev_date = avail_result.get('prev_date')
-            prev_time = avail_result.get('prev_time')
+            morning_date, morning_time = get_next_available_slot(
+                raw_date, check_time,
+                clinic_hours={"morning_start": 10, "morning_end": 13, "evening_start": 99, "evening_end": 99},
+                client_id=_client_id_kn
+            )
+            evening_date, evening_time = get_next_available_slot(
+                raw_date, check_time,
+                clinic_hours={"morning_start": 99, "morning_end": 99, "evening_start": 16, "evening_end": 19},
+                client_id=_client_id_kn
+            )
             suggestions = []
-            if prev_date and prev_time:
-                suggestions.append(f"earlier slot: {prev_date} at {prev_time}")
-            if next_date and next_time:
-                suggestions.append(f"next slot: {next_date} at {next_time}")
+            if morning_date and morning_time:
+                suggestions.append(f"morning: {morning_date} at {morning_time}")
+            if evening_date and evening_time:
+                suggestions.append(f"evening: {evening_date} at {evening_time}")
             if suggestions:
-                status_msg = "System: The slot is already BOOKED. Suggest these alternatives - " + ";".join(suggestions) + "."
+                status_msg = "System: That slot is BOOKED. Suggest ONLY these alternatives (1 morning, 1 evening) — " + "; ".join(suggestions) + ". Do NOT list any other slots."
             else:
-                status_msg = "System: The slot is already BOOKED. No alternative slots available."
+                status_msg = "System: That slot is BOOKED. No alternative slots available in the next 14 days."
         
         memory_with_check = memory + [
             {"role": "user", "content": user_text},
             {"role": "assistant", "content": "Let me check the schedule..."},
             {"role": "user", "content": status_msg}
         ]
-        response, state, parsed = await _run_agent2_kn("à²¦à²¯à²µà²¿à²Ÿà³à²Ÿà³ à²®à³à²‚à²¦à³à²µà²°à²¿à²¯à²¿à²°à²¿.", memory_with_check, state, agent1_context, groq_client, config)
+        response, state, parsed = await _run_agent2_kn("ದಯವಿಟ್ಟು ಮುಂದುವರಿಯಿರಿ.", memory_with_check, state, agent1_context, groq_client, config)
     return response, state, parsed
 
 async def run_agent2_en(user_text: str, memory: list, state: dict, agent1_context: dict, config: dict = None):
@@ -192,25 +199,32 @@ async def run_agent2_en(user_text: str, memory: list, state: dict, agent1_contex
             return response, state, parsed
 
         tool_state = await _sanitize_state_for_english_tools(state)
-        avail_result = check_availability(check_date, check_time, client_id=config.get("client_id") if config else None)
+        _client_id_en = config.get("client_id") if config else None
+        avail_result = check_availability(check_date, check_time, client_id=_client_id_en)
         is_available = avail_result.get('available', True)
-        
+
         if is_available:
             status_msg = "System: The slot is AVAILABLE."
         else:
-            next_date = avail_result.get('next_date')
-            next_time = avail_result.get('next_time')
-            prev_date = avail_result.get('prev_date')
-            prev_time = avail_result.get('prev_time')
+            morning_date, morning_time = get_next_available_slot(
+                check_date, check_time,
+                clinic_hours={"morning_start": 10, "morning_end": 13, "evening_start": 99, "evening_end": 99},
+                client_id=_client_id_en
+            )
+            evening_date, evening_time = get_next_available_slot(
+                check_date, check_time,
+                clinic_hours={"morning_start": 99, "morning_end": 99, "evening_start": 16, "evening_end": 19},
+                client_id=_client_id_en
+            )
             suggestions = []
-            if prev_date and prev_time:
-                suggestions.append(f"earlier slot: {prev_date} at {prev_time}")
-            if next_date and next_time:
-                suggestions.append(f"next slot: {next_date} at {next_time}")
+            if morning_date and morning_time:
+                suggestions.append(f"morning: {morning_date} at {morning_time}")
+            if evening_date and evening_time:
+                suggestions.append(f"evening: {evening_date} at {evening_time}")
             if suggestions:
-                status_msg = "System: The slot is already BOOKED. Suggest these alternatives - " + "; ".join(suggestions) + "."
+                status_msg = "System: That slot is BOOKED. Suggest ONLY these alternatives (1 morning, 1 evening) — " + "; ".join(suggestions) + ". Do NOT list any other slots."
             else:
-                status_msg = "System: The slot is already BOOKED. No alternative slots available."
+                status_msg = "System: That slot is BOOKED. No alternative slots available in the next 14 days."
         
         memory_with_check = memory + [
             {"role": "user", "content": user_text},
@@ -889,9 +903,10 @@ async def vobiz_stream(websocket: WebSocket):
                 agent1_context = agent1_parsed.get("context", {})
                 print(f" [VOBIZ ROUTER] Intent: {intent} | Summary: {agent1_parsed.get('summary')}")
 
-                raw_lang = agent1_parsed.get("language", "unknown")
-                if session_language is None and raw_lang != "unknown":
+                raw_lang = agent1_parsed.get("language", "kn")
+                if raw_lang in ("kn", "en"):
                     session_language = raw_lang
+                    print(f"[Vobiz][LANG] Agent-1 override → {session_language}")
 
                 effective_lang = session_language if session_language else effective_lang
 
@@ -1307,9 +1322,9 @@ async def vobiz_stream(websocket: WebSocket):
 
         try:
             if call_sid and call_sid != "unknown":
-                outcome = "booked" if state.get("appointment_id") else "enquiry"
+                outcome = "booked" if (state.get("appointment_id") or pending_payload) else "enquiry"
                 await asyncio.to_thread(
-                    log_call_end, call_sid, outcome,
+                    log_call_end, session_key, outcome,
                     language=session_language or "",
                     appointment_id=state.get("appointment_id", ""),
                     transcript=json.dumps(transcript_log, ensure_ascii=False),
