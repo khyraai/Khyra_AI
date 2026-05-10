@@ -703,6 +703,10 @@ async def transfer_emergency(request: Request):
     print(f"[Vobiz] /transfer/emergency â€” returning XML, dialing {number}")
     return Response(content=xml_response, media_type="application/xml")
 
+@app.get("/")
+async def root_health():
+    return Response(content="OK", media_type="text/plain")
+
 @app.post("/")
 async def vobiz_root_callback(request: Request):
     """Fallback endpoint to catch whatever Vobiz is POSTing and why."""
