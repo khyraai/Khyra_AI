@@ -133,7 +133,7 @@ async def run_agent2(user_text: str, memory: list, state: dict, agent1_context: 
         is_available = avail_result.get('available', True)
 
         if is_available:
-            status_msg = f"System: {check_time} on {raw_date} is CONFIRMED AVAILABLE. Proceed to confirm this exact slot with the user."
+            status_msg = f"System: The slot at {check_time} on {raw_date} is AVAILABLE. Follow step 2: restate date, time, reason and ask 'Is that correct?' — set confirmation_pending=true, done=false."
         else:
             morning_date, morning_time = get_next_available_slot(
                 raw_date, check_time,
@@ -204,7 +204,7 @@ async def run_agent2_en(user_text: str, memory: list, state: dict, agent1_contex
         is_available = avail_result.get('available', True)
 
         if is_available:
-            status_msg = f"System: {check_time} on {check_date} is CONFIRMED AVAILABLE. Proceed to confirm this exact slot with the user."
+            status_msg = f"System: The slot at {check_time} on {check_date} is AVAILABLE. Follow step 2: restate date, time, reason and ask 'Is that correct?' — set confirmation_pending=true, done=false."
         else:
             morning_date, morning_time = get_next_available_slot(
                 check_date, check_time,
@@ -1008,6 +1008,7 @@ async def vobiz_stream(websocket: WebSocket):
             if (
                 not in_agent3
                 and not pending_payload_sent
+                and not pending_payload
                 and parsed.get("done")
                 and state.get("name")
                 and state.get("date")

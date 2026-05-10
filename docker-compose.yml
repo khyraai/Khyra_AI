@@ -30,6 +30,7 @@ services:
         condition: service_healthy
     volumes:
       - app_logs:/app/src/.logs
+      - ./src/client_config.json:/app/src/client_config.json:ro
 
 volumes:
   pgdata:
