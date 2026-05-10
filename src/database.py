@@ -267,7 +267,13 @@ _SCHEMA_STATEMENTS = [
     # ---------------------------------------------------------------------------
     # Column migrations — safe to re-run (ADD COLUMN IF NOT EXISTS)
     # ---------------------------------------------------------------------------
-    "ALTER TABLE clients           ADD COLUMN IF NOT EXISTS config_version INTEGER",
+    "ALTER TABLE clients           ADD COLUMN IF NOT EXISTS config_version  INTEGER",
+    "ALTER TABLE clients           ADD COLUMN IF NOT EXISTS morning_open    TEXT",
+    "ALTER TABLE clients           ADD COLUMN IF NOT EXISTS morning_close   TEXT",
+    "ALTER TABLE clients           ADD COLUMN IF NOT EXISTS evening_open    TEXT",
+    "ALTER TABLE clients           ADD COLUMN IF NOT EXISTS evening_close   TEXT",
+    "ALTER TABLE clients           ADD COLUMN IF NOT EXISTS closed_weekdays TEXT",
+    "ALTER TABLE clients           ADD COLUMN IF NOT EXISTS services        TEXT",
     "ALTER TABLE appointments      ADD COLUMN IF NOT EXISTS sync_status    TEXT",
     "ALTER TABLE appointments      ADD COLUMN IF NOT EXISTS sync_error     TEXT",
     "ALTER TABLE appointments      ADD COLUMN IF NOT EXISTS retry_count    INTEGER DEFAULT 0",
