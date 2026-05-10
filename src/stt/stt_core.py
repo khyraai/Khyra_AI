@@ -316,7 +316,7 @@ async def _sarvam_attempt(audio_bytes: bytes, filename: str, api_key: str, langu
     data = aiohttp.FormData()
     data.add_field("model", "saaras:v3")
     data.add_field("language_code", "unknown")  # Always auto-detect; session lock is for routing only
-    data.add_field("mode", "spoken-to-written")  # Normalizes spoken KN/EN (times, numbers, dates)
+    data.add_field("mode", "transcribe")
     data.add_field("file", audio_bytes, filename=filename, content_type="audio/wav")
     try:
         async with session.post(url, headers=headers, data=data) as resp:
