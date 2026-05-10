@@ -1,4 +1,4 @@
-import os
+﻿import os
 import time
 import base64
 import json
@@ -144,7 +144,7 @@ async def run_agent2(user_text: str, memory: list, state: dict, agent1_context: 
             if next_date and next_time:
                 suggestions.append(f"next slot: {next_date} at {next_time}")
             if suggestions:
-                status_msg = f"System: The slot is already BOOKED. Suggest these alternatives â€" " + ";".join(suggestions) + "."
+                status_msg = "System: The slot is already BOOKED. Suggest these alternatives - " + ";".join(suggestions) + "."
             else:
                 status_msg = "System: The slot is already BOOKED. No alternative slots available."
         
@@ -208,7 +208,7 @@ async def run_agent2_en(user_text: str, memory: list, state: dict, agent1_contex
             if next_date and next_time:
                 suggestions.append(f"next slot: {next_date} at {next_time}")
             if suggestions:
-                status_msg = f"System: The slot is already BOOKED. Suggest these alternatives â€” " + "; ".join(suggestions) + "."
+                status_msg = "System: The slot is already BOOKED. Suggest these alternatives - " + "; ".join(suggestions) + "."
             else:
                 status_msg = "System: The slot is already BOOKED. No alternative slots available."
         
