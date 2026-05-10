@@ -322,7 +322,11 @@ async def _sarvam_attempt(audio_bytes: bytes, filename: str, api_key: str, langu
         async with session.post(url, headers=headers, data=data) as resp:
             body = await resp.text()
             if resp.status == 200:
-                payload = await resp.json(content_type=None)
+                try:
+                    import json as _json
+                    payload = _json.loads(body)
+                except Exception:
+                    payload = {}
                 text = (payload.get("transcript") or "").strip()
                 lang = _normalize_lang_to_en_or_kn(
                     detected_lang=payload.get("language_code", ""),
@@ -330,10 +334,13 @@ async def _sarvam_attempt(audio_bytes: bytes, filename: str, api_key: str, langu
                 )
                 return True, text, lang, "", "", False
             timed_out = resp.status == 408
+            print(f"[STT][Sarvam] \u274c HTTP {resp.status}: {body[:200]}")
             return False, "", "", f"http_{resp.status}", body[:400], timed_out
     except asyncio.TimeoutError:
+        print("[STT][Sarvam] \u274c Timeout")
         return False, "", "", "timeout", "", True
     except Exception as e:
+        print(f"[STT][Sarvam] \u274c Exception: {e}")
         return False, "", "", "network_error", str(e), False
 
 

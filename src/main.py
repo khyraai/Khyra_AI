@@ -844,9 +844,12 @@ async def vobiz_stream(websocket: WebSocket):
             wav_bytes = pcm16_to_wav_bytes(pcm_16k, 16000)
 
             t0 = time.time()
+            _stt_lang = session_language if session_language else (
+                "kn-IN" if client_cfg.get("default_language", "kn") == "kn" else "en-IN"
+            )
             user_text, detected_lang = await run_stt_http(
                 wav_bytes,
-                language_code=session_language if session_language else "unknown",
+                language_code=_stt_lang,
                 session_id=session_key,
                 client_id=client_id,
             )
