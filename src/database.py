@@ -548,16 +548,16 @@ def cancel_or_reschedule_appointment(
             (appointment_id,)
         )
         old_row = cur.fetchone()
-        old_start = old_row["start_time"] if old_row else ""
+        old_start = str(old_row["start_time"]) if (old_row and old_row["start_time"]) else ""
         old_status = old_row["status"] if old_row else ""
 
         cur.execute("""
             UPDATE appointments
             SET status = %s,
-                start_time = COALESCE(NULLIF(%s, ''), start_time),
+                start_time = COALESCE(%s::TIMESTAMP, start_time),
                 updated_at = %s
             WHERE id = %s
-        """, (action, new_start_time, now, appointment_id))
+        """, (action, new_start_time or None, now, appointment_id))
 
         cur.execute("""
             INSERT INTO cancellations
@@ -615,7 +615,9 @@ def log_call_end(
         duration = 0.0
         if row and row["call_start"]:
             try:
-                start = datetime.fromisoformat(row["call_start"])
+                start = row["call_start"]
+                if isinstance(start, str):
+                    start = datetime.fromisoformat(start)
                 duration = (datetime.now() - start).total_seconds()
             except Exception:
                 pass
