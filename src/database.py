@@ -1126,7 +1126,7 @@ def _get_fully_booked_slots(iso_timestamps: list, client_id: str = None) -> set:
                     GROUP BY start_time HAVING COUNT(*) >= %s
                 """, (iso_timestamps, MAX_BOOKINGS_PER_SLOT))
             rows = cur.fetchall()
-        return {r["start_time"] for r in rows}
+        return {r["start_time"].isoformat() if isinstance(r["start_time"], datetime) else r["start_time"] for r in rows}
     except Exception as e:
         print(f"⚠️ [DB] _get_fully_booked_slots primary error: {e}. Trying secondary...")
     try:
@@ -1147,7 +1147,7 @@ def _get_fully_booked_slots(iso_timestamps: list, client_id: str = None) -> set:
                     GROUP BY start_time HAVING COUNT(*) >= %s
                 """, (iso_timestamps, MAX_BOOKINGS_PER_SLOT))
             rows = cur.fetchall()
-        return {r["start_time"] for r in rows}
+        return {r["start_time"].isoformat() if isinstance(r["start_time"], datetime) else r["start_time"] for r in rows}
     except Exception:
         return set()
 
