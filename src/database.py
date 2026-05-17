@@ -292,6 +292,14 @@ _SCHEMA_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_appt_client_id        ON appointments(client_id)",
     "CREATE INDEX IF NOT EXISTS idx_agent_appt_client_id  ON agent_appointments(client_id)",
     "CREATE INDEX IF NOT EXISTS idx_reschedules_client_id ON reschedules(client_id)",
+    # Drop any manually-added FK constraints on telemetry tables — client_id
+    # in these tables is a soft TEXT label, not a relational FK.
+    "ALTER TABLE llm_events   DROP CONSTRAINT IF EXISTS fk_llm_events_client",
+    "ALTER TABLE stt_events   DROP CONSTRAINT IF EXISTS fk_stt_events_client",
+    "ALTER TABLE tts_events   DROP CONSTRAINT IF EXISTS fk_tts_events_client",
+    "ALTER TABLE call_logs    DROP CONSTRAINT IF EXISTS fk_call_logs_client",
+    "ALTER TABLE audit_log    DROP CONSTRAINT IF EXISTS fk_audit_log_client",
+    "ALTER TABLE cancellations DROP CONSTRAINT IF EXISTS fk_cancellations_client",
 ]
 
 
