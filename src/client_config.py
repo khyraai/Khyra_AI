@@ -19,7 +19,7 @@ import re
 _CONFIG_PATH = os.path.join(os.path.dirname(__file__), "client_config.json")
 
 _DEFAULT_CONFIG = {
-    "client_id": "default",
+    "client_id": "CLN001",
     "clinic_name": "Doctor Deepti's Dental and Orthodontic Centre",
     "doctor_name": "Doctor Naga Deepti",
     "doctor_qualifications": "MDS — Orthodontics and Dentofacial Orthopaedics",
@@ -137,6 +137,8 @@ def get_config_by_did(did: str) -> dict | None:
         return _did_to_config[norm]
     if not norm.startswith("+") and ("+" + norm) in _did_to_config:
         return _did_to_config["+" + norm]
+    if norm.startswith("+") and norm[1:] in _did_to_config:
+        return _did_to_config[norm[1:]]
     # DB fallback — client registered in DB but not in client_config.json
     return _load_from_db_by_did(norm)
 
