@@ -148,7 +148,7 @@ def build_scheduling_payload(
             raw = f"{state['date']} {state['time']}"
             import pytz
             ist_tz = pytz.timezone("Asia/Kolkata")
-            for fmt in ("%d %B %Y %I:%M %p", "%d %B %Y %H:%M", "%Y-%m-%d %H:%M"):
+            for fmt in ("%d %B %Y %I:%M %p", "%d %B %Y %H:%M", "%Y-%m-%d %I:%M %p", "%Y-%m-%d %H:%M"):
                 try:
                     naive_dt = datetime.strptime(raw, fmt)
                     # Localize to IST to ensure consistent timezone format

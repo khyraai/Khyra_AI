@@ -843,30 +843,26 @@ def save_agent_appointment(payload: dict, session_id: str = "", client_id: str =
         with get_conn() as cur:
             cur.execute("""
                 INSERT INTO agent_appointments (
-                    id, session_id, client_id, event_type,
-                    patient_name, patient_phone, start_time, end_time, previous_datetime,
+                    id, session_id, client_id,
+                    patient_name, patient_phone, start_time, end_time,
                     appointment_type, status, doctor_name, reason,
                     booked_via, agent_notes, created_at, updated_at
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT(id) DO UPDATE SET
                     session_id=EXCLUDED.session_id,
                     client_id=EXCLUDED.client_id,
-                    event_type=EXCLUDED.event_type,
                     start_time=EXCLUDED.start_time,
                     end_time=EXCLUDED.end_time,
-                    previous_datetime=EXCLUDED.previous_datetime,
                     status=EXCLUDED.status,
                     updated_at=EXCLUDED.updated_at
             """, (
                 payload.get("id", ""),
                 session_id or payload.get("session_id", ""),
                 resolved_client_id,
-                payload.get("event_type", "appointment_create"),
                 payload.get("patient_name", ""),
                 payload.get("patient_phone", ""),
                 start_time,
                 end_time,
-                payload.get("previous_datetime", ""),
                 payload.get("appointment_type", "consultation"),
                 payload.get("status", "scheduled"),
                 payload.get("doctor_name", ""),
