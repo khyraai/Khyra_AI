@@ -205,6 +205,7 @@ def build_scheduling_payload(
     payload = {
         "id": str(uuid.uuid4()),
         "event_type": event_type,
+        "session_id": state.get("call_sid", ""),
         "client_id": resolved_client_id,
         "connection_id": state.get("connection_id", state.get("call_sid", "")),
         "google_event_id": "",
