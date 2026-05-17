@@ -36,6 +36,7 @@ _DEFAULT_CONFIG = {
 _cached_configs: dict = {}
 _did_to_config: dict = {}
 _id_to_config: dict = {}
+_configs_loaded: bool = False
 
 
 def _normalise_did(raw: str) -> str:
@@ -50,8 +51,8 @@ def _normalise_did(raw: str) -> str:
 
 def load_client_configs() -> dict:
     """Load and cache client_config.json. Returns DID-keyed dict."""
-    global _cached_configs, _did_to_config, _id_to_config
-    if _cached_configs:
+    global _cached_configs, _did_to_config, _id_to_config, _configs_loaded
+    if _configs_loaded:
         return _cached_configs
 
     try:
@@ -83,6 +84,7 @@ def load_client_configs() -> dict:
     _cached_configs = normalised
     _did_to_config = normalised
     _id_to_config = id_map
+    _configs_loaded = True
     return normalised
 
 
@@ -91,9 +93,10 @@ def _load_from_db_by_did(norm: str) -> dict | None:
     try:
         from pg import get_conn
         with get_conn() as cur:
+            digits = norm.lstrip("+")
             cur.execute(
-                "SELECT * FROM clients WHERE did_number = %s OR did_number = %s LIMIT 1",
-                (norm, norm.lstrip("+")),
+                "SELECT * FROM clients WHERE did_number = %s OR did_number = %s OR did_number = %s LIMIT 1",
+                (norm, digits, "+" + digits),
             )
             row = cur.fetchone()
         if row:
@@ -164,8 +167,9 @@ def get_default_config() -> dict:
 
 def reload_configs() -> dict:
     """Force reload from disk (useful after file edit in dev)."""
-    global _cached_configs, _did_to_config, _id_to_config
+    global _cached_configs, _did_to_config, _id_to_config, _configs_loaded
     _cached_configs = {}
     _did_to_config = {}
     _id_to_config = {}
+    _configs_loaded = False
     return load_client_configs()
