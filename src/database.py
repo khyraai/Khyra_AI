@@ -292,14 +292,55 @@ _SCHEMA_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_appt_client_id        ON appointments(client_id)",
     "CREATE INDEX IF NOT EXISTS idx_agent_appt_client_id  ON agent_appointments(client_id)",
     "CREATE INDEX IF NOT EXISTS idx_reschedules_client_id ON reschedules(client_id)",
-    # Drop any manually-added FK constraints on telemetry tables — client_id
-    # in these tables is a soft TEXT label, not a relational FK.
-    "ALTER TABLE llm_events   DROP CONSTRAINT IF EXISTS fk_llm_events_client",
-    "ALTER TABLE stt_events   DROP CONSTRAINT IF EXISTS fk_stt_events_client",
-    "ALTER TABLE tts_events   DROP CONSTRAINT IF EXISTS fk_tts_events_client",
-    "ALTER TABLE call_logs    DROP CONSTRAINT IF EXISTS fk_call_logs_client",
-    "ALTER TABLE audit_log    DROP CONSTRAINT IF EXISTS fk_audit_log_client",
-    "ALTER TABLE cancellations DROP CONSTRAINT IF EXISTS fk_cancellations_client",
+    # Drop all manually-added client_id FK constraints — none were defined in
+    # code; all cause FK violations on any client_id config mismatch.
+    # client_id is treated as a soft TEXT label throughout this codebase.
+    "ALTER TABLE llm_events          DROP CONSTRAINT IF EXISTS fk_llm_events_client",
+    "ALTER TABLE stt_events          DROP CONSTRAINT IF EXISTS fk_stt_events_client",
+    "ALTER TABLE tts_events          DROP CONSTRAINT IF EXISTS fk_tts_events_client",
+    "ALTER TABLE call_logs           DROP CONSTRAINT IF EXISTS fk_call_logs_client",
+    "ALTER TABLE audit_log           DROP CONSTRAINT IF EXISTS fk_audit_log_client",
+    "ALTER TABLE cancellations       DROP CONSTRAINT IF EXISTS fk_cancellations_client",
+    "ALTER TABLE agent_appointments  DROP CONSTRAINT IF EXISTS fk_agent_appointments_client",
+    "ALTER TABLE appointments        DROP CONSTRAINT IF EXISTS fk_appointments_client",
+    "ALTER TABLE sessions            DROP CONSTRAINT IF EXISTS fk_sessions_client",
+    "ALTER TABLE reschedules         DROP CONSTRAINT IF EXISTS fk_reschedules_client",
+    "ALTER TABLE app_users           DROP CONSTRAINT IF EXISTS fk_app_users_client",
+    "ALTER TABLE calendar_connections DROP CONSTRAINT IF EXISTS fk_calendar_client",
+    # Tables created externally (dashboard/calendar integration) — ensure they exist
+    """
+    CREATE TABLE IF NOT EXISTS app_users (
+        firebase_uid  TEXT PRIMARY KEY,
+        client_id     TEXT NOT NULL,
+        email         TEXT,
+        created_at    TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS calendar_connections (
+        id                    SERIAL PRIMARY KEY,
+        client_id             TEXT NOT NULL,
+        doctor_name           TEXT,
+        provider              TEXT DEFAULT 'google',
+        google_account_email  TEXT NOT NULL,
+        calendar_id           TEXT NOT NULL UNIQUE,
+        calendar_name         TEXT,
+        refresh_token         TEXT NOT NULL,
+        access_token          TEXT,
+        token_expiry          TIMESTAMP WITHOUT TIME ZONE,
+        watch_channel_id      TEXT,
+        watch_resource_id     TEXT,
+        watch_expiration      TIMESTAMP WITHOUT TIME ZONE,
+        sync_token            TEXT,
+        last_sync_time        TIMESTAMP WITHOUT TIME ZONE,
+        timezone              TEXT,
+        connection_status     TEXT DEFAULT 'active',
+        last_error            TEXT,
+        created_at            TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at            TIMESTAMP WITHOUT TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_calendar_connections_client ON calendar_connections(client_id)",
 ]
 
 
