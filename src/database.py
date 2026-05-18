@@ -895,14 +895,17 @@ def save_agent_appointment(payload: dict, session_id: str = "", client_id: str =
                     id, session_id, client_id,
                     patient_name, patient_phone, start_time, end_time,
                     appointment_type, status, doctor_name, reason,
-                    booked_via, agent_notes, created_at, updated_at
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    booked_via, agent_notes, event_type, previous_datetime,
+                    created_at, updated_at
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT(id) DO UPDATE SET
                     session_id=EXCLUDED.session_id,
                     client_id=EXCLUDED.client_id,
                     start_time=EXCLUDED.start_time,
                     end_time=EXCLUDED.end_time,
                     status=EXCLUDED.status,
+                    event_type=EXCLUDED.event_type,
+                    previous_datetime=EXCLUDED.previous_datetime,
                     updated_at=EXCLUDED.updated_at
             """, (
                 payload.get("id", ""),
@@ -918,6 +921,8 @@ def save_agent_appointment(payload: dict, session_id: str = "", client_id: str =
                 payload.get("reason", ""),
                 payload.get("booked_via", "voice_assistant"),
                 payload.get("agent_notes", ""),
+                payload.get("event_type", ""),
+                payload.get("previous_datetime", ""),
                 payload.get("created_at", now),
                 payload.get("updated_at", now),
             ))
