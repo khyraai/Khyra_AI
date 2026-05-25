@@ -518,7 +518,19 @@ def _is_valid_clinic_slot(date_str: str, time_str: str):
     # Python: Monday=0 ... Sunday=6
     if date_obj.weekday() == 6:
         return False, "The centre is closed on Sundays. Please pick another day."
-    
+
+    # ---- Past datetime check (IST) ---------------------------------------
+    import pytz
+    ist_tz = pytz.timezone("Asia/Kolkata")
+    now_ist = datetime.now(ist_tz)
+    slot_naive = date_obj.replace(hour=time_obj.hour, minute=time_obj.minute, second=0, microsecond=0)
+    slot_ist = ist_tz.localize(slot_naive)
+    if slot_ist < now_ist:
+        return False, (
+            "That date and time has already passed. "
+            "Please choose a future date and time."
+        )
+
     # ---- Operating windows ----------------------------------------------
     minutes = time_obj.hour * 60 + time_obj.minute
     morning_ok = (10 * 60) <= minutes <= (12 * 60 + 59)   # 10:00â€“12:59
@@ -764,7 +776,7 @@ async def vobiz_stream(websocket: WebSocket):
 
     BYTES_PER_SEC    = 16000
     FLUSH_AFTER_SECS = 2.0
-    SILENCE_SECS     = 0.65
+    SILENCE_SECS     = 0.80
     MIN_SPEECH_SECS  = 0.35
     MIN_VOICED_SECS  = 0.25
 
@@ -808,6 +820,8 @@ async def vobiz_stream(websocket: WebSocket):
         nonlocal voiced_bytes, next_stt_allowed_ts, stt_backoff_secs, call_active
         nonlocal pending_payload, pending_payload_sent
 
+        is_speaking = True
+
         buf_snapshot = bytes(audio_buffer)
         voiced_snapshot = voiced_bytes
         audio_buffer = bytearray()
@@ -816,22 +830,24 @@ async def vobiz_stream(websocket: WebSocket):
 
         now_ts = time.time()
         if now_ts < next_stt_allowed_ts:
+            is_speaking = False
             return
 
         if voiced_snapshot < MIN_VOICED_BYTES:
             print(f"[Vobiz] Too little voiced audio ({voiced_snapshot}B) â€” skipping")
+            is_speaking = False
             return
 
         try:
             buf_rms = audioop.rms(buf_snapshot, 2)
             if buf_rms < max(150, int(_silence_rms_threshold() * 0.8)):
                 print(f"[Vobiz] RMS={buf_rms} noise â€” skip")
+                is_speaking = False
                 return
             print(f"[Vobiz] RMS={buf_rms} â€” sending to STT")
         except Exception:
             pass
 
-        is_speaking = True
         parsed = {}
         effective_lang = "en"
         response_text = ""
@@ -959,9 +975,11 @@ async def vobiz_stream(websocket: WebSocket):
                 else:
                     print(f"[VOBIZ ROUTER] Agent-2 ({effective_lang}) | Intent: {intent}")
                     if effective_lang == "en":
-                        response_text, state, parsed = await run_agent2_en(user_text, memory, state, agent1_context, config=client_cfg)
+                        response_text, _new_state, parsed = await run_agent2_en(user_text, memory, state, agent1_context, config=client_cfg)
                     else:
-                        response_text, state, parsed = await run_agent2(user_text, memory, state, agent1_context, config=client_cfg)
+                        response_text, _new_state, parsed = await run_agent2(user_text, memory, state, agent1_context, config=client_cfg)
+                    if _new_state:
+                        state.update(_new_state)
                     agent1_ran = True
             else:
                 if in_agent3:
@@ -972,9 +990,11 @@ async def vobiz_stream(websocket: WebSocket):
                         response_text, agent3_state, parsed = await run_agent3_kn(user_text, memory, agent3_state, agent1_context, config=client_cfg)
                 else:
                     if effective_lang == "en":
-                        response_text, state, parsed = await run_agent2_en(user_text, memory, state, agent1_context, config=client_cfg)
+                        response_text, _new_state, parsed = await run_agent2_en(user_text, memory, state, agent1_context, config=client_cfg)
                     else:
-                        response_text, state, parsed = await run_agent2(user_text, memory, state, agent1_context, config=client_cfg)
+                        response_text, _new_state, parsed = await run_agent2(user_text, memory, state, agent1_context, config=client_cfg)
+                    if _new_state:
+                        state.update(_new_state)
 
                     # Agent-2 handoff → switch to Agent-3 for cancel/reschedule
                     if parsed.get("handoff"):
