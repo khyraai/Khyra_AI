@@ -654,6 +654,8 @@ async def vobiz_answer(request: Request):
     params = {}
     if caller_phone:
         params["phone"] = caller_phone
+    if call_uuid:
+        params["call_uuid"] = call_uuid
     stream_url = f"{scheme}://{host}/vobiz-stream"
     if params:
         stream_url += "?" + urllib.parse.urlencode(params)
@@ -739,11 +741,21 @@ async def vobiz_stream(websocket: WebSocket):
     stream_sid = "unknown"
     call_active = True
 
-    caller_phone = websocket.query_params.get("phone", "unknown")
-    did_number   = ""       # resolved from Vobiz start event
-    client_cfg   = get_default_config()
-    client_id    = client_cfg.get("client_id", "default")
-    print(f"\n[Vobiz] Call connected | Caller: {caller_phone} | DID: TBD (awaiting start event)")
+    caller_phone    = websocket.query_params.get("phone", "unknown")
+    call_uuid_param = websocket.query_params.get("call_uuid", "")
+    print(f"\n[Vobiz] WS query params: {dict(websocket.query_params)}")
+
+    # Immediately resolve DID → client config from /answer mapping
+    did_number = ""
+    client_cfg = get_default_config()
+    client_id  = client_cfg.get("client_id", "default")
+    if call_uuid_param and call_uuid_param in _call_did_map:
+        did_number   = _call_did_map.pop(call_uuid_param)
+        resolved_cfg = get_config_by_did(did_number)
+        if resolved_cfg:
+            client_cfg = resolved_cfg
+            client_id  = client_cfg.get("client_id", "default")
+    print(f"\n[Vobiz] Call connected | Caller: {caller_phone} | DID: {did_number} | client: {client_id}")
 
     state = get_initial_state()
     state["phone"]         = caller_phone
@@ -1183,10 +1195,45 @@ async def vobiz_stream(websocket: WebSocket):
             if session_key and session_key != "unknown":
                 await asyncio.to_thread(session_store.save_session, session_key, state, memory)
 
+    # Play greeting immediately on connect using already-resolved client config
+    if not greeted and call_active:
+        greeted = True
+        try:
+            welcome_lang = client_cfg.get("default_language", "en")
+            clinic_name  = client_cfg.get("clinic_name", "our clinic")
+            if welcome_lang == "kn":
+                welcome_text = f"\u0ca8\u0cae\u0cb8\u0ccd\u0c95\u0cbe\u0cb0, {clinic_name} \u0c97\u0cc6 \u0cb8\u0ccd\u0cb5\u0cbe\u0c97\u0ca4. \u0ca8\u0cbe\u0ca8\u0cc1 \u0ca8\u0cbf\u0cae\u0c97\u0cc6 \u0cb9\u0cc7\u0c97\u0cc6 \u0cb8\u0cb9\u0cbe\u0caf \u0cae\u0cbe\u0ca1\u0cb2\u0cbf?"
+            else:
+                welcome_text = f"Hello, welcome to {clinic_name}. How may I assist you?"
+            welcome_bytes = 0
+            async for chunk in cartesia_tts_chunked(welcome_text, language=welcome_lang):
+                welcome_bytes += len(chunk)
+                out_chunk, _ = audioop.ratecv(chunk, 2, 1, 16000, 8000, None)
+                is_speaking = True
+                await websocket.send_text(json.dumps({
+                    "event": "playAudio",
+                    "media": {"contentType": "audio/x-l16", "sampleRate": 8000,
+                              "payload": base64.b64encode(out_chunk).decode()},
+                }))
+            is_speaking = False
+            if welcome_bytes:
+                print(f"[Vobiz] Immediate greeting sent ({welcome_bytes}B): '{welcome_text}'")
+                transcript_log.append({"speaker": "bot", "text": welcome_text})
+        except Exception as _ge:
+            print(f"[Vobiz] Immediate greeting error: {_ge}")
+            is_speaking = False
+
     try:
         while call_active:
             try:
-                message = await asyncio.wait_for(websocket.receive_text(), timeout=30)
+                raw_msg = await asyncio.wait_for(websocket.receive(), timeout=30)
+                if raw_msg.get("type") == "websocket.disconnect":
+                    print("[Vobiz] Disconnect frame received")
+                    break
+                if raw_msg.get("bytes"):
+                    print(f"[Vobiz] Binary frame {len(raw_msg['bytes'])}B -- skipping")
+                    continue
+                message = raw_msg.get("text") or ""
             except asyncio.TimeoutError:
                 print("[Vobiz] 30s idle â€” closing")
                 break
