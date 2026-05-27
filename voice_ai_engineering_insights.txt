@@ -1,0 +1,880 @@
+================================================================================
+VOICE AI ENGINEERING INSIGHTS — KHYRA AI PRODUCTION SYSTEM
+Answered from actual codebase: src/main.py, stt/stt_core.py, tts/tts_core.py,
+llm.py, agent1.py, agent2_en.py, agent2_kn.py, agent3_en.py, agent3_kn.py,
+utils.py, database.py, client_config.py
+================================================================================
+
+
+================================================================================
+1. VOICE AI SYSTEMS BEHAVE MORE LIKE DISTRIBUTED SYSTEMS THAN CHATBOTS
+================================================================================
+
+QUESTION: How many concurrent streams exist during a live call?
+---------------------------------------------------------------
+A single live call runs one WebSocket connection but spans at least four
+concurrent async execution contexts simultaneously:
+
+  - The main WebSocket receive loop (reading Vobiz media frames)
+  - process_audio() — spawned as asyncio.create_task() per utterance
+  - cartesia_tts_chunked() — streaming PCM chunks over a persistent WebSocket
+    to Cartesia's API while simultaneously writing to the Vobiz connection
+  - log_llm_event() and save_agent_appointment() — fire-and-forget
+    asyncio.create_task(asyncio.to_thread(...)) calls that write to PostgreSQL
+    without blocking the voice path
+
+Hardware resource: the system enforces semaphores across all concurrent calls:
+  STT:  _STT_SEMAPHORE   = Semaphore(3)   — max 3 STT requests in flight globally
+  TTS:  _TTS_SEMAPHORE   = Semaphore(8)   — max 8 TTS requests in flight globally
+  LLM:  LLM_MAX_CONCURRENT_PER_KEY = 5   — per Groq API key concurrency cap
+
+Per-client limits additionally layer on top:
+  STT per client: Semaphore(2), max 6 req/sec
+  TTS per client: Semaphore(2), max 3 req/sec
+
+
+QUESTION: What components communicate simultaneously?
+-----------------------------------------------------
+During one turn of a live call, these systems are active in parallel:
+
+  1. Vobiz telephony (WebSocket) — inbound G.711 µ-law/L16 audio frames
+  2. Sarvam STT API (HTTP POST)  — async WAV upload for transcription
+  3. Groq LLM API (HTTPS)        — Agent-1 intent routing (200 tokens, JSON)
+                                 — Agent-2 or Agent-3 appointment/cancel flow
+  4. Cartesia TTS (WebSocket)    — persistent connection, streaming PCM back
+  5. PostgreSQL (psycopg2)       — session load/save, call log, LLM event log,
+                                   availability check, appointment write
+  6. n8n Webhook (HTTP POST)     — appointment payload dispatch on call end
+  7. Vobiz REST API (DELETE)     — hang-up signal when conversation ends
+  8. Emergency Transfer API      — POST to redirect call to human (if triggered)
+
+No component waits for another to finish before it starts. Audio is
+downstream-streamed to Vobiz while TTS is still synthesizing.
+
+
+QUESTION: What timing and state synchronization issues occur?
+--------------------------------------------------------------
+The biggest synchronization problem is barge-in protection:
+
+  is_speaking = True/False flag — set True before TTS audio starts, False in
+  finally block. If media chunks arrive while is_speaking=True, they are
+  silently discarded (the caller's voice is ignored while bot is talking).
+
+  next_stt_allowed_ts — a timestamp gate that prevents the STT provider from
+  being called again within 0.8 seconds of a successful transcript, preventing
+  duplicate processing of the same utterance buffered across packet boundaries.
+
+  availability_checked flag — without this, Agent-2 would CHECK_AVAILABILITY
+  again on the follow-up LLM call after injecting the availability result into
+  memory, creating an infinite loop.
+
+  session_store.save_session() in finally blocks — ensures state is written
+  to PostgreSQL even if an exception kills the audio processing task mid-flight.
+  The next call can recover where it left off via load_session().
+
+  _call_did_map — a plain dict mapping callUUID → DID number, populated by the
+  HTTP /answer endpoint and consumed by the WebSocket start event. These two
+  happen asynchronously and must be coordinated to resolve which clinic config
+  to use for the call.
+
+
+QUESTION: What happens when one provider slows down?
+----------------------------------------------------
+Each provider has an independent hard deadline enforced by asyncio.wait_for():
+
+  STT timeout:  8.0 seconds (STT_REQUEST_TIMEOUT_SEC)
+  LLM timeout:  8.0 seconds (asyncio.wait_for in agent1/agent2/agent3 runners)
+  TTS timeout: 30.0 seconds (TTS_REQUEST_TIMEOUT_SEC)
+
+When Sarvam STT times out:
+  → STT semaphore released via finally block
+  → Provider chain falls through to Deepgram, then Groq Whisper
+  → Empty transcript returned if all fail → turn is silently skipped
+
+When Groq LLM 429s:
+  → LLMPool rotates instantly to the next API key (no sleep on 429)
+  → Tries up to LLM_MAX_RETRIES * num_keys attempts across all keys
+  → On total exhaustion → exception → fallback JSON returned by parse_llm_json()
+
+When Cartesia TTS times out or disconnects:
+  → _cartesia_pool.mark_dead(key) replaces the connection next call
+  → Provider chain falls to Sarvam TTS (HTTP), then ElevenLabs (HTTP)
+  → If Cartesia fails mid-stream after audio has already been sent,
+    NO fallback is attempted (sent_any_audio=True guard) — avoids double audio
+  → TTS returns empty bytes → call continues without bot speaking that turn
+
+
+================================================================================
+2. LATENCY COMPOUNDS ACROSS EVERY STAGE OF A VOICE PIPELINE
+================================================================================
+
+QUESTION: Approximate latency per stage?
+-----------------------------------------
+From log_interaction() which records stt_time, llm_time, tts_time per turn:
+
+  AUDIO BUFFERING:     800ms silence required before flush (SILENCE_SECS=0.80)
+                       or 2.0s max buffer (FLUSH_AFTER_SECS=2.0)
+
+  AUDIO TRANSCODING:   ~0-5ms  — mulaw_8k_to_pcm16_16k() via audioop (CPU-only)
+
+  STT (Sarvam):        ~400ms–1.5s typical — HTTP POST WAV to Sarvam cloud
+                       Queue wait adds up to 1.5s (STT_QUEUE_WAIT_TIMEOUT_SEC)
+
+  LLM Agent-1:         ~300ms–800ms — Groq llama-3.3-70b, 200 max tokens, JSON
+  LLM Agent-2/3:       ~600ms–2.0s  — larger prompt, more tokens
+
+  TTS TTFA:            ~200ms–600ms to first audio chunk from Cartesia WebSocket
+                       (Time-to-First-Audio measured and logged per turn)
+
+  AUDIO TRANSCODING:   ~0-3ms — PCM 16kHz → L16 8kHz via audioop.ratecv
+
+  TOTAL END-TO-END:    ~2.0s–5.5s from end of speech to first audio out
+  (silence detection + STT + LLM + TTS TTFA, compounding serially)
+
+
+QUESTION: Biggest bottleneck?
+------------------------------
+Two bottlenecks, context-dependent:
+
+  1. SILENCE DETECTION DELAY (800ms mandatory wait) — the system cannot send
+     audio to STT until it detects 800ms of silence or 2 full seconds of audio.
+     This is unavoidable with telephone VAD and dominates perceived delay for
+     short utterances.
+
+  2. TTS SYNTHESIS — Cartesia's first chunk takes 200–600ms. For Indian language
+     content (Kannada), model inference is heavier. This is the bottleneck that
+     streaming was specifically engineered to hide.
+
+
+QUESTION: Where does buffering occur?
+--------------------------------------
+  1. Incoming audio:   audio_buffer (bytearray) accumulates G.711/L16 frames
+                       until silence or max size triggers process_audio()
+
+  2. STT semaphore:    if all 3 STT slots are busy, new requests wait up to 1.5s
+                       in the asyncio.wait_for queue before being dropped
+
+  3. TTS output:       Cartesia WebSocket yields PCM chunks; each chunk is
+                       immediately sent to Vobiz without local buffering
+                       (true pass-through streaming)
+
+  4. LLM pool:         per-key asyncio.Semaphore(5) queues excess LLM calls
+                       per Groq API key before they are dispatched
+
+
+QUESTION: How did streaming reduce perceived latency?
+------------------------------------------------------
+Two streaming optimizations are in production:
+
+  1. _split_first_sentence() in main.py:
+     Response text is split at the first sentence boundary (., !, ?).
+     The first sentence (typically 10-30 chars) is sent to Cartesia first,
+     so audio starts playing while the second sentence is still being synthesized.
+     Code comment: "reduces TTFA by ~40-60%"
+
+  2. Cartesia persistent WebSocket pool (_CartesiaPool):
+     One WebSocket per API key is held open across turns with ping/pong every
+     20 seconds. This eliminates the TLS handshake + connection overhead
+     (~100-300ms) that would otherwise recur on every single response.
+
+  3. Per-chunk streaming to Vobiz:
+     Each PCM chunk from Cartesia is immediately base64-encoded and sent as a
+     playAudio frame. The caller hears audio starting ~200ms after synthesis
+     begins, not after the full sentence is done.
+
+
+================================================================================
+3. DESIGNING PROVIDER FALLBACK CHAINS FOR REALTIME AI SYSTEMS
+================================================================================
+
+QUESTION: Why multiple STT/TTS providers?
+------------------------------------------
+Single-provider dependency is a production reliability problem, not a design
+preference. The primary providers (Sarvam STT, Cartesia TTS) are cloud APIs
+with their own rate limits, maintenance windows, and regional latency spikes.
+During Sarvam rate-limit events (429s), calls would silently fail without a
+fallback. Indian-language voice AI has fewer provider options, so every
+viable provider in the ecosystem is in the chain.
+
+
+QUESTION: Fallback logic design?
+---------------------------------
+STT provider chain (stt_core.py):
+  1. Sarvam (saaras:v3) — primary; auto-detects Kannada/English, optimized for
+     Indian accent and Kanglish
+  2. Deepgram (nova-3)  — fallback 1; configured with language hint from session
+  3. Groq Whisper (whisper-large-v3-turbo) — fallback 2; last resort
+
+TTS provider chain (tts_core.py):
+  1. Cartesia (sonic-3, WebSocket) — primary; persistent connection pool,
+     lowest latency, streaming PCM
+  2. Sarvam TTS (bulbul:v2, HTTP)  — fallback 1; Indian language optimized
+  3. ElevenLabs (eleven_multilingual_v2, HTTP) — fallback 2; general fallback
+
+LLM fallback (llm.py):
+  Not a provider chain — instead, round-robin across N Groq API keys.
+  On 429: instantly rotate to next key, no sleep.
+  On other errors: exponential backoff up to 2.0s before retry.
+
+
+QUESTION: Failure detection mechanism?
+---------------------------------------
+_is_retryable_error(error_type) classifies every failure:
+
+  RETRYABLE (try next attempt or next provider):
+    timeout, network_error, http_408, http_425, http_429, http_5xx
+
+  NON-RETRYABLE (skip immediately, go to next provider):
+    api_key_missing, provider_unconfigured, http_400, http_401, http_403,
+    http_404, http_409, http_410, http_413, http_415, http_422
+
+  Cartesia specifically: mark_dead(key) is called on any exception, forcing
+  a fresh WebSocket reconnect on the next request. Dead connection detection
+  uses websockets.connection.State.OPEN check before attempting send.
+
+  Sarvam global RPM gate: a sliding 60-second window (_SARVAM_GLOBAL_RPM_WINDOW)
+  counts all Sarvam STT calls across ALL clients. If it hits 55 req/min, the
+  entire Sarvam provider is skipped and the chain falls to Deepgram immediately.
+
+
+QUESTION: Provider switching conditions?
+-----------------------------------------
+Provider switch happens in order, no manual intervention:
+
+  1. Primary provider raises any exception (network, timeout, bad response)
+  2. Primary returns HTTP 4xx/5xx
+  3. Primary returns empty audio/transcript
+  4. Global RPM limit hit (Sarvam STT only)
+  5. Cost guardrail hit (stops all providers, not just switches)
+
+Cartesia TTS special case: if Cartesia has already sent audio chunks to the
+client (sent_any_audio=True), the stream stops cleanly on failure — no fallback
+is attempted. Sending fallback audio after partial playback would produce
+garbled/duplicate speech on the caller's end.
+
+
+QUESTION: Latency vs accuracy tradeoffs?
+-----------------------------------------
+Sarvam STT is chosen as primary over Deepgram for Kannada accuracy despite
+similar latency, because Sarvam's saaras:v3 model handles Kanglish (mixed
+Kannada-English script) and Indian phone audio better. The tradeoff accepted
+is Sarvam's lower RPM ceiling (55 req/min) vs Deepgram's higher throughput.
+
+Cartesia is chosen as primary TTS over Sarvam TTS for latency: WebSocket
+streaming cuts TTFA by ~300-500ms vs Sarvam's HTTP POST round-trip. The
+tradeoff accepted is Cartesia's higher cost-per-character.
+
+
+================================================================================
+4. REALTIME TELEPHONY AI PIPELINES HAVE DIFFERENT CONSTRAINTS THAN WEB CHATBOTS
+================================================================================
+
+QUESTION: Telephony audio formats used?
+-----------------------------------------
+Vobiz (the telephony provider) delivers audio in two formats:
+
+  1. G.711 µ-law (audio/x-mulaw) — the dominant PSTN format, 8-bit, 8kHz
+  2. Linear PCM (audio/x-l16) — 16-bit signed, 8kHz
+
+Format is determined dynamically from the WebSocket start event:
+  vobiz_encoding = fmt.get("encoding", "audio/x-mulaw").lower()
+
+Audio is sent BACK to Vobiz as: audio/x-l16 at 8kHz sample rate (playAudio
+frames with contentType "audio/x-l16" and sampleRate 8000).
+
+
+QUESTION: Why is transcoding needed?
+--------------------------------------
+Three transcoding operations happen on every single audio chunk:
+
+INBOUND (before STT):
+  G.711 µ-law 8kHz → PCM s16le 8kHz → PCM s16le 16kHz
+  
+  Step 1: audioop.ulaw2lin(raw_chunk, 2)
+    µ-law uses logarithmic companding designed for telephone SNR. STT models
+    expect linear PCM. Without this, the audio sounds distorted to the model.
+  
+  Step 2: audioop.ratecv(pcm_8k, 2, 1, 8000, 16000, None)
+    Sarvam STT requires 16kHz sample rate. Telephone lines use 8kHz (PSTN
+    bandwidth cap of ~3.4kHz). Upsampling interpolates the missing samples.
+
+OUTBOUND (after TTS):
+  PCM s16le 16kHz → L16 8kHz (for Vobiz playback)
+  
+  audioop.ratecv(chunk, 2, 1, 16000, 8000, None)
+    Cartesia TTS outputs 16kHz PCM. Vobiz's telephone channel is limited to
+    8kHz. Downsampling reduces bandwidth and matches telephony constraints.
+
+
+QUESTION: Packet timing issues?
+---------------------------------
+Vobiz sends audio as a continuous stream of WebSocket media events — small
+base64-encoded chunks arriving every ~20ms. This creates several timing issues:
+
+  1. Fragmentation: a single spoken word arrives split across multiple packets.
+     The system accumulates chunks in audio_buffer (bytearray) until enough
+     silence or data is present to form a coherent utterance.
+
+  2. Silence vs. pause: true silence (caller thinking) looks identical to
+     packet loss or hold music. RMS threshold (SILENCE_RMS_THR=800 for µ-law)
+     distinguishes them, but background noise raises the floor and causes
+     early flush.
+
+  3. Echo: the bot's TTS output is played back into the telephone circuit.
+     While is_speaking=True, incoming media is discarded entirely to prevent
+     the bot from hearing its own voice and triggering another STT→LLM cycle.
+
+  4. 30-second idle timeout: if no media events arrive for 30 seconds, the
+     WebSocket is closed and call state cleaned up (asyncio.wait_for on
+     websocket.receive_text() with timeout=30).
+
+
+QUESTION: Transport constraints?
+----------------------------------
+WebSocket is used bidirectionally (not HTTP) because:
+  - The telephony platform (Vobiz) requires it for streaming audio in real time
+  - HTTP would require request-response cycles adding 50-200ms round-trip per
+    chunk, making streaming impossible
+  - The bidirectional=true attribute in Vobiz XML tells the platform to keep
+    the WebSocket open for both inbound and outbound audio simultaneously
+
+The XML response to /answer:
+  <Stream bidirectional="true" keepCallAlive="true">{stream_url}</Stream>
+  <Wait length="3600" />
+
+keepCallAlive=true prevents Vobiz from hanging up when the Stream tag is active.
+Wait length=3600 keeps the call alive for up to 1 hour if stream doesn't close it.
+
+
+================================================================================
+5. STATE MANAGEMENT BECOMES CRITICAL IN CONVERSATIONAL AI SYSTEMS
+================================================================================
+
+QUESTION: How is session state maintained?
+-------------------------------------------
+Each call has an isolated state dict initialized by get_initial_state():
+  {name, doctor, reason, date, time, age}
+
+This state dict is passed into Agent-2/Agent-3 on every LLM call and returned
+updated. Agent LLMs output JSON that includes a "state" field with the current
+collection progress (which fields have been filled).
+
+State is persisted to PostgreSQL via SessionStore after every process_audio()
+call (in the finally block), keyed by session_key = f"vobiz_{call_sid}".
+If a call drops and reconnects, load_session() restores exact state and memory,
+so the conversation resumes mid-flow without restarting.
+
+
+QUESTION: How are workflows tracked?
+--------------------------------------
+Two boolean flags track which agent is handling the current workflow:
+
+  agent1_ran  = False → True after first real utterance (not greeting)
+                Controls whether Agent-1 routing runs on this turn
+
+  in_agent3   = False → True when cancel/reschedule detected
+                Once True, all subsequent turns go to Agent-3 (not Agent-2)
+
+The `in_agent3` flag is a one-way state machine transition. Once a caller
+says "cancel" and Agent-3 takes over, there is no mechanism to route back to
+Agent-2 (booking) within the same call. Each call is single-intent.
+
+The agent1_context dict carries the intent and treatment context from Agent-1
+into Agent-2 and Agent-3 so those agents have routing context without being
+called again.
+
+
+QUESTION: How are booking states handled?
+-------------------------------------------
+Agent-2 tracks booking progress through these state fields:
+
+  confirmation_pending  — all fields collected, asking caller "is that correct?"
+  availability_checked  — CHECK_AVAILABILITY tool has been called for this slot
+  appointment_id        — set after save_agent_appointment() succeeds
+
+Critical guard: if Agent-2's LLM forgets to request CHECK_AVAILABILITY even
+though all fields are filled, the orchestration layer detects this:
+
+  if _all_appointment_fields_present(state)
+     and not state.get("confirmation_pending")
+     and not state.get("availability_checked")
+     and not parsed.get("done"):
+       parsed["action"] = "CHECK_AVAILABILITY"  # forced override
+
+This prevents double-booking from LLM non-compliance.
+
+The appointment payload is built as pending_payload during the call and only
+sent to n8n and PostgreSQL in the finally block at call end — not during the
+conversation. This prevents orphaned appointments if the call drops before
+the caller confirms.
+
+
+QUESTION: What happens during unexpected transitions?
+------------------------------------------------------
+  - Non-Kannada script in Kannada response: if the LLM outputs Hindi/Tamil
+    Unicode in a Kannada session, RMS character-range check fires and response
+    is replaced with a fallback Kannada phrase. If it was an END_CALL response,
+    the call still ends cleanly.
+
+  - Agent-2 handoff to Agent-3: if Agent-2 parsed.handoff=True, in_agent3 flips
+    True and all future turns route to Agent-3, mid-conversation.
+
+  - Guardrail intercept: if the user tries to jailbreak, the LLM is never called.
+    The guardrail response is TTS'd directly and execution returns, preserving
+    all session state unchanged.
+
+  - LLM JSON parse failure: parse_llm_json() falls back to a hardcoded safe
+    response with all missing_fields listed, so the booking flow re-prompts
+    rather than crashing.
+
+
+================================================================================
+6. BUILDING AI SYSTEMS MEANS ENGINEERING AROUND FAILURE, NOT JUST INTELLIGENCE
+================================================================================
+
+QUESTION: Common runtime failures?
+------------------------------------
+From the provider chain and error type enums in stt_core.py and tts_core.py:
+
+  1. Sarvam 429 rate-limit — most common under load; global RPM limit at 55/min
+  2. Groq 429 rate-limit   — per API key; auto-rotated to next key
+  3. Cartesia WebSocket drop — idle connections evicted server-side; mark_dead()
+     then reconnect on next request
+  4. Empty STT transcript   — background noise, silence, or packet loss causing
+     Sarvam to return "" — filtered by _drop_as_noise_or_duplicate()
+  5. LLM non-JSON output    — parse_llm_json() regex fallback recovers
+  6. LLM skipping actions   — e.g. Agent-2 forgetting CHECK_AVAILABILITY;
+     caught by _all_appointment_fields_present() guard
+  7. Kannada→non-Kannada script confusion — LLM outputs Hindi Unicode instead
+     of Kannada; detected by Unicode range check, replaced with fallback
+  8. Vobiz WebSocket disconnect — WebSocketDisconnect exception in receive loop;
+     call_active=False triggers cleanup
+  9. PostgreSQL timeout      — wrapped in asyncio.to_thread(); exception caught,
+     logged, call continues (non-blocking DB ops)
+
+
+QUESTION: Timeout handling?
+-----------------------------
+Every external I/O has a hard deadline:
+
+  STT:  asyncio.wait_for(session.post(...), timeout=8.0s)  — via aiohttp.ClientTimeout
+  LLM:  asyncio.wait_for(groq.create(...), timeout=8.0s)   — in each agent runner
+  TTS:  asyncio.wait_for(_do_collect(), timeout=30.0s)     — in Cartesia attempt
+  Queue wait:  asyncio.wait_for(semaphore.acquire(), timeout=1.5s) for STT
+               asyncio.wait_for(semaphore.acquire(), timeout=2.5s) for TTS
+  Vobiz call control: requests.delete() with timeout=3s (hangup API)
+  Emergency transfer: requests.post() with timeout=3s
+  N8N webhook: requests.post() with timeout=5s
+
+All timeouts default-fail safe: if STT times out, transcript="" and the turn is
+skipped. If TTS times out, empty bytes returned and the bot stays silent for that
+turn. The call never hangs indefinitely on a provider failure.
+
+
+QUESTION: Retry logic?
+------------------------
+STT (Sarvam): 1 retry with exponential backoff before fallback to Deepgram
+  Backoff: base=0.25s * 2^attempt + jitter(0–0.08s), capped at 1.5s
+
+TTS (Cartesia): 1 retry with exponential backoff before fallback to Sarvam TTS
+  Backoff: base=0.3s * 2^attempt + jitter(0–0.1s), capped at 2.0s
+
+LLM (Groq pool): LLM_MAX_RETRIES=2 per key × N keys = up to 2N total attempts
+  429 errors: rotate to next key instantly (no sleep)
+  Other errors: sleep min(0.3s * (attempt+1), 2.0s) before retry
+
+Non-retryable errors (401, 403, 404, provider_unconfigured) skip immediately to
+next provider in chain — no retry delay added for known-permanent failures.
+
+
+QUESTION: Error recovery flows?
+---------------------------------
+  Provider failure → fallback provider → fallback provider → empty result → skip turn
+  
+  Agent JSON failure → parse_llm_json() hardcoded fallback → re-prompt user
+  
+  Script mismatch → Unicode range check → hardcoded Kannada fallback string
+
+  Appointment field miss → _all_appointment_fields_present() guard → force action
+
+  Call crash mid-booking → finally block → session_store.save_session() preserves
+  state → pending_payload sent to n8n/DB if it exists
+
+  call_active=False propagates: every async loop checks this flag before sending
+  more audio or making provider calls, preventing wasted API calls after hangup
+
+
+================================================================================
+7. WHY STREAMING CHANGES THE FEEL OF CONVERSATIONAL AI SYSTEMS
+================================================================================
+
+QUESTION: What changed after streaming?
+-----------------------------------------
+Before chunked TTS: the bot had to wait for the entire TTS response to be
+synthesized, then send the full audio buffer. For a 3-sentence response at
+Kannada speed, this meant 1.5–3 additional seconds of silence before the caller
+heard anything — making the bot feel unresponsive and robotic.
+
+After chunked TTS with Cartesia WebSocket:
+  - First audio chunk arrives from Cartesia ~200–400ms after synthesis starts
+  - Each chunk is immediately base64-encoded and sent as a Vobiz playAudio frame
+  - The caller starts hearing audio ~200ms after synthesis begins, not after
+    the full sentence is complete
+
+After _split_first_sentence() optimization:
+  - Response split into [first_sentence, remainder]
+  - Cartesia starts synthesizing first_sentence (10–30 chars typically) first
+  - While caller hears first sentence, Cartesia synthesizes the rest
+  - TTFA reduced by ~40-60% per code comment vs single full-text synthesis
+
+
+QUESTION: Perceived responsiveness improvements?
+-------------------------------------------------
+  STT backoff system prevents false triggers: next_stt_allowed_ts blocks STT
+  for 0.8s after a valid transcript, so the system does not re-process trailing
+  audio as a new utterance — reducing "double-response" feel.
+
+  Greeting pre-synthesis: the welcome greeting is synthesized and sent immediately
+  in the WebSocket start event handler, before the caller has said a word.
+  Caller hears a greeting within ~500ms of call connect, masking connection setup.
+
+  is_speaking flag: bot stops processing incoming audio while talking, so the
+  caller does not experience the bot "talking over itself" due to audio echo.
+
+
+QUESTION: Chunking behavior?
+------------------------------
+Cartesia streams PCM s16le 16kHz chunks via WebSocket messages of type "chunk".
+Each message carries a base64-encoded PCM chunk of variable size (~4-16KB
+typically). The system:
+  1. Decodes base64 → raw PCM bytes
+  2. Strips to even byte count: chunk = chunk[:len(chunk) & ~1]
+     (PCM s16le requires even byte count for audioop.ratecv)
+  3. Downsamples: audioop.ratecv(chunk, 2, 1, 16000, 8000, None) → 8kHz
+  4. Base64-encodes for Vobiz playAudio frame
+  5. await websocket.send_text(frame) — immediately on each chunk
+
+Total throughput: each TTS part loops over all chunks before moving to the
+next part (sequential sentences, parallel synthesis handled by sentence-split).
+
+
+QUESTION: Buffering strategies?
+---------------------------------
+  INPUT buffering: audio_buffer (bytearray) accumulates until silence or size
+  SEMAPHORE buffering: asyncio.Semaphore queues excess TTS requests rather than
+  dropping them, bounded by TTS_QUEUE_WAIT_TIMEOUT_SEC=2.5s
+  CARTESIA pool buffering: persistent WebSocket with per-key asyncio.Lock
+  serialises requests on each connection — no concurrent sends on one socket
+
+  Explicit NO-BUFFER decision for outbound: each PCM chunk is sent immediately.
+  Buffering outbound audio would increase perceived lag even if total throughput
+  is unchanged, so pass-through was chosen.
+
+
+================================================================================
+8. MULTI-AGENT AI SYSTEMS NEED ROUTING LOGIC MORE THAN BIGGER MODELS
+================================================================================
+
+QUESTION: Current agent architecture?
+---------------------------------------
+Three specialized agents, two language variants each:
+
+  AGENT-1: Intent Router
+    Input: user utterance + short conversation memory
+    Output: JSON {intent, context, summary, response, language}
+    Model: llama-3.3-70b-versatile, max_tokens=200, temperature=0.1
+    Intents: greeting | appointment | enquiry | emergency | cancel_reschedule
+             | system_check
+    Language detection: kn | en (Kannada script detection + keyword detection)
+
+  AGENT-2-KN / AGENT-2-EN: Appointment Booking
+    Input: user text + memory + state dict + agent1 context
+    Output: JSON {response, state, action, done, handoff, confirmation_status}
+    Actions: CHECK_AVAILABILITY (intercepted by orchestrator layer)
+             END_CALL (triggers hangup)
+    Collects: name, age, reason, date, time
+    State machine: collecting → availability check → confirmation → done
+
+  AGENT-3-KN / AGENT-3-EN: Cancel / Reschedule
+    Input: user text + memory + state dict + agent1 context
+    Output: JSON {response, state, action, done, event_type, confirmation_status}
+    Actions: VERIFY_APPOINTMENT (intercepted), CHECK_AVAILABILITY (intercepted)
+    Event types: appointment_cancel | appointment_reschedule
+    State machine: collecting → verify → (new slot check) → confirm → done
+
+
+QUESTION: Routing decisions?
+------------------------------
+Turn 1 routing (agent1_ran=False):
+  greeting        → speak welcome text, set agent1_ran=True, wait for next turn
+  system_check    → speak nothing, set agent1_ran=True
+  emergency       → speak emergency text, TRANSFER_CALL action, close WebSocket
+  cancel_reschedule → set in_agent3=True, route to Agent-3
+  appointment/enquiry → route to Agent-2
+
+Turn 2+ routing (agent1_ran=True):
+  in_agent3=True  → Agent-3 (all subsequent turns)
+  in_agent3=False → Agent-2 (all subsequent turns)
+  Agent-2 parsed.handoff=True → flip in_agent3=True, route remaining to Agent-3
+
+Language routing:
+  effective_lang=kn → Agent-2-KN / Agent-3-KN
+  effective_lang=en → Agent-2-EN / Agent-3-EN
+  Language locked on first turn from Agent-1's language field or STT detected_lang
+
+
+QUESTION: Task delegation flow?
+---------------------------------
+  1. process_audio() receives STT transcript
+  2. check_guardrails() — pre-LLM security check (regex, no LLM call)
+  3. If not agent1_ran: await run_agent1() → get intent
+  4. Route to appropriate agent (Agent-2 or Agent-3)
+  5. Orchestrator intercepts tool actions (CHECK_AVAILABILITY, VERIFY_APPOINTMENT):
+     - Calls database directly (Python, no LLM)
+     - Injects result as system message into memory
+     - Re-calls the same agent with "please proceed" instruction
+  6. Agent returns done=True → build pending_payload, queue for dispatch
+  7. On END_CALL: sleep 1.5s, call Vobiz hangup API, close WebSocket
+
+
+QUESTION: Why multiple agents instead of one big model?
+--------------------------------------------------------
+  1. Context efficiency: Agent-1 uses 200 tokens max. A combined agent would
+     need the full booking prompt on every turn including turn 1 routing,
+     wasting ~2000 tokens and adding ~300-500ms to routing latency.
+
+  2. JSON reliability: smaller focused prompt = higher compliance with JSON
+     schema. Agent-1 has never produced a non-JSON response in production
+     because its instruction set is narrow and the output is simple.
+
+  3. Language isolation: having separate KN/EN agent files means Kannada
+     prompt examples do not pollute English agent context and vice versa.
+     Language-specific nuances (ಬೇಕು/beku as appointment signal) are in the
+     right agent only.
+
+  4. Specialization: Agent-3 knows nothing about booking. Agent-2 knows nothing
+     about cancellation. This reduces hallucination risk where a combined agent
+     might partially execute the wrong workflow.
+
+  5. Cost: Agent-1 at 200 tokens × thousands of calls/day is orders of magnitude
+     cheaper than running a full booking prompt for every single turn.
+
+
+================================================================================
+9. CONVERSATIONAL AI SYSTEMS NEED COST GUARDRAILS IN PRODUCTION
+================================================================================
+
+QUESTION: How does cost tracking work?
+----------------------------------------
+Three separate cost tracking systems, one per provider type:
+
+  STT COSTS (stt_core.py + stt_metrics.py):
+    Cost = (audio_duration_sec / 60) * cost_per_minute_by_provider
+    Env vars: SARVAM_COST_INR_PER_MIN, DEEPGRAM_COST_INR_PER_MIN,
+              INK_COST_INR_PER_MIN, OPENAI_WHISPER_COST_INR_PER_MIN
+    Tracked per: session_id (call-level) and client_id (clinic-level)
+
+  TTS COSTS (tts_core.py + tts_metrics.py):
+    Cost = char_count * cost_per_character_by_provider
+    Env vars: CARTESIA_COST_INR_PER_CHAR, SARVAM_TTS_COST_INR_PER_CHAR,
+              ELEVENLABS_COST_INR_PER_CHAR
+    Tracked per: session_id and client_id
+
+  LLM COSTS (llm.py):
+    Cost = (input_tokens/1M * $0.59) + (output_tokens/1M * $0.79) USD
+    Tracked globally via _record() with threading.Lock for thread safety
+    Metrics available via get_llm_metrics_snapshot() — includes per_key stats,
+    avg_latency_ms, success_rate_pct, total_cost_usd
+
+  All costs are stored in PostgreSQL call_logs, stt_events, tts_events,
+  llm_events tables for post-hoc analysis.
+
+
+QUESTION: Request limiting?
+-----------------------------
+Three-gate concurrency model (both STT and TTS):
+
+  Gate 1 — Per-client RPS check:
+    _allow_client_rps(client_id, max_rps) — sliding 1-second window
+    Default: STT max 6 req/sec, TTS max 3 req/sec
+    Reject immediately if exceeded (return "" for STT, return b"" for TTS)
+
+  Gate 2 — Per-client concurrency:
+    asyncio.Semaphore(2) per client_id
+    New request waits up to queue_wait_timeout, then dropped
+
+  Gate 3 — Global concurrency:
+    asyncio.Semaphore(3) for all STT, Semaphore(8) for all TTS
+    Prevents a single burst client from starving all others
+
+  Additionally: _SARVAM_GLOBAL_RPM_LIMIT=55 — sliding 60-second window across
+  ALL clients for Sarvam STT. If this fires, the entire Sarvam provider is
+  bypassed and Deepgram takes over for that request.
+
+
+QUESTION: Session thresholds?
+-------------------------------
+  Per-session STT cost cap:  STT_MAX_COST_INR_PER_SESSION (env, default 0=off)
+  Per-client STT cost cap:   TTS_DEFAULT_CLIENT_MAX_COST_INR (env, default 0=off)
+  Per-session TTS cost cap:  TTS_MAX_COST_INR_PER_SESSION (env, default 0=off)
+  Per-client TTS cost cap:   TTS_DEFAULT_CLIENT_MAX_COST_INR (env, default 0=off)
+
+  Session TTL: stale sessions evicted after 1800s (30 min) from both STT and TTS
+  metric stores via cleanup_stale_sessions(). Up to 5000 sessions tracked.
+
+  Memory window: last 12 messages kept in LLM context (memory = memory[-12:])
+  This prevents unbounded token growth on long calls and limits LLM cost per turn.
+
+
+QUESTION: Provider selection logic?
+-------------------------------------
+Provider selection is purely reliability-driven, not cost-optimized:
+
+  Primary provider is always tried first (Sarvam/Cartesia) regardless of cost.
+  Fallback is triggered only by failure, not by cost comparison.
+
+  The one cost-aware decision in the chain: if a retry or fallback attempt would
+  push the session or client over their cost cap, it is blocked immediately:
+
+    projected_cost = current_spend + estimated_attempt_cost
+    if projected_cost > max_allowed:
+        hard_stop_due_to_cost = True  → breaks all provider loops
+
+  This means the system can return empty STT/TTS rather than exceed a cost
+  ceiling, even if more providers are available. Silent failure over overspend.
+
+
+================================================================================
+10. ONE UNEXPECTED CHALLENGE IN VOICE AI: HANDLING HUMAN CONVERSATION PATTERNS
+================================================================================
+
+QUESTION: Overlapping speech problems?
+----------------------------------------
+The system solves overlap with a simple but effective flag:
+
+  is_speaking = True  while bot TTS audio is being sent to Vobiz
+  
+  In the media event handler:
+    elif event == "media":
+        if is_speaking:
+            continue  ← caller's audio completely discarded while bot speaks
+
+This is barge-in suppression. The caller cannot interrupt the bot mid-sentence
+in the current design — their audio is dropped until is_speaking goes False.
+This was an explicit tradeoff: allowing barge-in requires VAD on the inbound
+stream simultaneously with outbound playback, which creates echo/feedback issues
+on phone calls without acoustic echo cancellation.
+
+
+QUESTION: Silence detection behavior?
+---------------------------------------
+Four threshold parameters control when "enough has been said":
+
+  MIN_VOICED_SECS  = 0.25  — minimum voiced audio required (25ms of real speech)
+  MIN_SPEECH_SECS  = 0.35  — minimum total buffer before flush considered
+  SILENCE_SECS     = 0.80  — silence duration that triggers flush (800ms)
+  FLUSH_AFTER_SECS = 2.0   — hard max buffer time regardless of silence
+
+  voiced_bytes counter tracks non-silent chunks. If voiced_bytes < MIN_VOICED_BYTES
+  when flush triggers, the buffer is discarded entirely (likely noise/hold music).
+
+  RMS threshold: SILENCE_RMS_THR = 800 for µ-law (harder, more ambient noise)
+                                   250 for L16 (cleaner, lower threshold needed)
+
+  The dual trigger (silence_enough OR buffer_full+has_some_silence) ensures that
+  fast talkers who pause briefly still get processed, and slow deliberate speakers
+  are not cut off mid-sentence.
+
+
+QUESTION: Interruptions?
+--------------------------
+Interruptions are not handled mid-stream — they are handled between turns.
+
+If a caller speaks while the bot is silent (between its last word and the caller's
+next word), the audio buffer captures it normally and process_audio() fires.
+
+If a caller speaks while the bot is actively sending audio (is_speaking=True),
+their audio is silently dropped and they must wait for the bot to finish.
+
+The bot's own audio sets is_speaking=True at the start of TTS streaming and
+is_speaking=False in the finally block after the last chunk is sent. For a 3-5
+sentence response, this suppression window is 4-8 seconds of caller audio loss.
+
+This is the biggest UX limitation of the current architecture and is a known
+tradeoff — true barge-in requires echo cancellation infrastructure.
+
+
+QUESTION: Hesitation patterns?
+--------------------------------
+Empty STT returns (from filler sounds like "umm", "ahh") trigger a backoff
+that prevents the STT provider from being called again too soon:
+
+    stt_backoff_secs = min(8.0, stt_backoff_secs * 2.0 if stt_backoff_secs else 1.5)
+    next_stt_allowed_ts = time.time() + stt_backoff_secs
+
+  First empty: wait 1.5 seconds
+  Second consecutive: wait 3.0 seconds
+  Third consecutive: wait 6.0 seconds
+  Capped at 8.0 seconds maximum backoff
+
+A real utterance (non-empty transcript) resets backoff to 0 and sets a fixed
+0.8s cooldown (next_stt_allowed_ts = time.time() + 0.8).
+
+This exponential backoff prevents the system from burning STT quota on a caller
+who is breathing heavily, coughing, or sitting in silence thinking, while still
+responding quickly once they actually speak.
+
+
+QUESTION: Noisy input handling?
+---------------------------------
+Two-layer noise filtering:
+
+  Layer 1 — In WebSocket handler (before STT):
+    RMS check on raw audio chunk — if audioop.rms(buf) < threshold * 0.8,
+    skip STT entirely. Only voiced audio that clears this bar is sent upstream.
+
+  Layer 2 — After STT (transcript filtering):
+    NOISE_TRANSCRIPTS set: "chari", "okay", "ok", "hmm", ".", "..", "sari",
+    "haang", "thank you", "thanks", "yes", "no"
+    Short 1-2 char transcripts (non-numeric) dropped
+    
+    _drop_as_noise_or_duplicate() in stt_core.py:
+      - Minimum 3 characters required (configurable)
+      - Repeated punctuation patterns rejected
+      - Duplicate transcript within 3.5 seconds of same session rejected
+        (prevents identical responses to echo or repeated filler words)
+
+  The result: genuine patient utterances ("I want to book an appointment for
+  my tooth pain") pass through. Background TV noise, brief acknowledgments,
+  and echo artifacts are silently discarded without triggering LLM calls.
+
+
+================================================================================
+STRATEGIC SUMMARY
+================================================================================
+
+The strongest engineering observations from this codebase:
+
+1. The pipeline is a distributed system in disguise — 6+ external services
+   communicating concurrently on every turn, requiring semaphores, timeouts,
+   and state machines rather than simple function calls.
+
+2. Latency is compounded and irreversible — every stage adds to the caller's
+   wait. Streaming (sentence-split + chunk pass-through) reduces the felt
+   latency without reducing actual processing time.
+
+3. Reliability requires more code than intelligence — the provider fallback
+   chains, retry logic, guardrails, and state recovery code is larger than the
+   AI prompt engineering combined.
+
+4. Audio physics constrain software design — G.711 µ-law, 8kHz PSTN bandwidth,
+   echo feedback, and barge-in physics dictate architecture decisions that no
+   amount of LLM capability can override.
+
+5. Small specialized agents outperform big generalist ones in production voice
+   systems — faster inference, better JSON compliance, lower cost, and cleaner
+   failure modes per routing tier.
+
+================================================================================
+END OF DOCUMENT
+================================================================================
