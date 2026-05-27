@@ -661,9 +661,10 @@ async def vobiz_answer(request: Request):
         stream_url += "?" + urllib.parse.urlencode(params)
     print(f"[Vobiz] Caller: {caller_phone}  DID: {did_number}  CallUUID: {call_uuid}")
 
+    xml_stream_url = stream_url.replace("&", "&amp;")
     xml_response = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Stream bidirectional="true" keepCallAlive="true">{stream_url}</Stream>
+    <Stream bidirectional="true" keepCallAlive="true">{xml_stream_url}</Stream>
     <Wait length="3600" />
 </Response>
 """
