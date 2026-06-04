@@ -40,7 +40,7 @@ _DEFAULT_CONFIG = {
     "doctor_mobile": "+91 9187471874",
     "consultation_fee_min": 200,
     "consultation_fee_max": 300,
-    "default_language": "kn",
+    "default_language": "en",
     "emergency_transfer_number": "+918660033297",
     "connection_id": "deepti_dental",
 }
