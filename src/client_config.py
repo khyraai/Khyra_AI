@@ -32,17 +32,17 @@ DB_CACHE_TTL_SECONDS = 300
 
 _DEFAULT_CONFIG = {
     "client_id": "CLN001",
-    "clinic_name": "Doctor Deepti's Dental and Orthodontic Centre",
-    "doctor_name": "Doctor Naga Deepti",
+    "clinic_name": "our clinic",
+    "doctor_name": "the doctor",
     "doctor_qualifications": "MDS — Orthodontics and Dentofacial Orthopaedics",
-    "address": "Number 39, 3rd Cross, Dwarakanagar, Hoskerehalli, Bangalore",
-    "timings": "Monday to Saturday — 10:00 AM to 1:00 PM and 4:00 PM to 7:00 PM. Closed on Sunday.",
-    "doctor_mobile": "+91 9187471874",
+    "address": "I don't have the exact address handy right now, but I can send it to your WhatsApp immediately after this call",
+    "timings": "Monday to Saturday — 10:00 AM to 1:00 PM and 4:00 PM to 8:00 PM. Closed on Sunday.",
+    "doctor_mobile": "I'm unable to fetch the number right now, but we will send it to your WhatsApp or email right after this call",
     "consultation_fee_min": 200,
-    "consultation_fee_max": 300,
+    "consultation_fee_max": 500,
     "default_language": "en",
-    "emergency_transfer_number": "+918660033297",
-    "connection_id": "deepti_dental",
+    "emergency_transfer_number": "I'm unable to fetch the emergency number right now, but I can have the clinic contact you immediately via WhatsApp",
+    "connection_id": "default_clinic",
 }
 
 _did_to_config: dict = {}

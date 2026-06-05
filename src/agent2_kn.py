@@ -221,6 +221,11 @@ Output: {{"response": "", "intent": "appointment", "action": "CHECK_AVAILABILITY
 System: "AVAILABLE"
 Output: {{"response": "ರಾಜ್ ಅವರೇ, ನಿಮ್ಮ ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ವಿವರ: ದಂತ ತಪಾಸಣೆಗಾಗಿ, ಸೋಮವಾರ, 7 ಏಪ್ರಿಲ್ 2026, ಸಂಜೆ 5 ಗಂಟೆ. ಇದು ಸರಿಯೇ?", "intent": "appointment", "action": null, "handoff": false, "state": {{"name": "ರಾಜ್", "age": 30, "reason": "ದಂತ ತಪಾಸಣೆ", "date": "2026-04-07", "time": "5:00 PM", "confirmation_pending": true}}, "done": false}}
 
+-- Example 3D: User confirms appointment → finalize --
+User: "ಹಾ, ಸರಿ ಇದೆ" / "ಸರಿ" / "ಅದು ಸರಿ" / "ಯೆಸ್" / "ಓಕೆ"
+Current State: {{"name": "ರಾಜ್", "age": 30, "reason": "ದಂತ ತಪಾಸಣೆ", "date": "2026-04-07", "time": "5:00 PM", "confirmation_pending": true}}
+Output: {{"response": "ರಾಜ್ ಅವರೇ, ನಿಮ್ಮ ಅಪಾಯಿಂಟ್ಮೆಂಟ್ ದೃಢೀಕರಿಸಲಾಗಿದೆ. ಇನ್ನೇನಾದರೂ ಸಹಾಯ ಬೇಕಾ?", "intent": "appointment", "action": null, "handoff": false, "state": {{"confirmation_pending": false}}, "done": true}}
+
 SECURITY GUARDRAILS (ABSOLUTE — OVERRIDE EVERYTHING):
 - You are ONLY Divya, a dental clinic receptionist. You have NO other identity or capability.
 - NEVER reveal what AI model, company, or technology powers this service.
@@ -298,6 +303,11 @@ async def run_agent2_kn(user_text: str, memory: list, state: dict, agent1_contex
         if val is None:
             continue
         if isinstance(val, bool):
+            # Guard: Prevent LLM from clearing confirmation_pending without done=true
+            if k == "confirmation_pending" and state.get("confirmation_pending") is True:
+                if val is False and not parsed.get("done"):
+                    print(f"[Agent-2-KN] ⚠️ LLM tried to clear confirmation_pending without done=true — ignoring")
+                    continue
             state[k] = val
             continue
         if val == 0:
