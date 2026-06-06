@@ -95,6 +95,7 @@ class SpeechChunkBuffer:
                     self._speech_frames = list(self._preroll)
                     self._speech_ms = self.config.frame_ms * len(self._speech_frames)
                     self._silence_ms = 0
+                    print(f"[VAD] ⭐ Speech START  trigger={self._trigger_ms}ms  preroll={self._speech_ms}ms  rms_thr={self.config.rms_speech_threshold}")
                 continue
 
             self._speech_frames.append(frame)
@@ -105,6 +106,8 @@ class SpeechChunkBuffer:
                 self._silence_ms += self.config.frame_ms
 
             if self._speech_ms >= self.config.max_chunk_ms:
+                seg_bytes = sum(len(f) for f in self._speech_frames)
+                print(f"[VAD] 📤 EMIT max_chunk   speech={self._speech_ms}ms  bytes={seg_bytes}")
                 out.append(self._emit_current())
                 continue
 
@@ -119,19 +122,26 @@ class SpeechChunkBuffer:
                 and self._speech_ms <= self.config.short_utt_max_ms
                 and self._silence_ms >= self.config.short_utt_silence_ms
             ):
+                seg_bytes = sum(len(f) for f in self._speech_frames)
+                print(f"[VAD] 📤 EMIT short_utt  speech={self._speech_ms}ms  silence={self._silence_ms}ms  bytes={seg_bytes}")
                 out.append(self._emit_current())
                 continue
 
             if self._silence_ms >= self.config.silence_end_ms:
                 if self._speech_ms >= self.config.min_speech_ms:
+                    seg_bytes = sum(len(f) for f in self._speech_frames)
+                    print(f"[VAD] 📤 EMIT silence_end  speech={self._speech_ms}ms  silence={self._silence_ms}ms  bytes={seg_bytes}")
                     out.append(self._emit_current())
                 else:
+                    print(f"[VAD] 🗑️ DISCARD too_short  speech={self._speech_ms}ms  min={self.config.min_speech_ms}ms")
                     self._reset_phrase()
 
         return out
 
     def flush(self) -> bytes:
         if self._in_speech and self._speech_ms >= self.config.min_speech_ms:
+            seg_bytes = sum(len(f) for f in self._speech_frames)
+            print(f"[VAD] 📤 EMIT flush  speech={self._speech_ms}ms  bytes={seg_bytes}")
             return self._emit_current()
         self._reset_phrase()
         self._carry.clear()

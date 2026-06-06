@@ -36,6 +36,8 @@ from stt import (
     mulaw_8k_to_pcm16_16k,
     pcm16_16k_to_mulaw_8k,
     pcm16_to_wav_bytes,
+    SpeechChunkBuffer,
+    VadBufferConfig,
 )
 from tts import cartesia_tts_collect, cartesia_tts_chunked, cartesia_tts_stream
 from database import check_availability, get_next_available_slot, verify_appointment_for_cancellation, update_appointment_status, reschedule_appointment, log_call_start, log_call_end, log_llm_event, save_agent_appointment
@@ -780,84 +782,70 @@ async def vobiz_stream(websocket: WebSocket):
     pending_payload = None
     pending_payload_sent = False
 
-    audio_buffer = bytearray()
     is_speaking  = False
+    processing_audio = False
 
-    voiced_bytes = 0
     next_stt_allowed_ts = 0.0
     stt_backoff_secs = 0.0
 
-    BYTES_PER_SEC    = 16000
-    FLUSH_AFTER_SECS = 2.0
-    SILENCE_SECS     = 0.80
-    MIN_SPEECH_SECS  = 0.35
-    MIN_VOICED_SECS  = 0.25
+    # VAD buffer — proper speech segmentation with preroll + continuation
+    vad_config = VadBufferConfig(
+        sample_rate_hz=8000,
+        sample_width_bytes=2,
+        frame_ms=20,
+        start_trigger_ms=60,
+        min_speech_ms=350,
+        silence_end_ms=800,
+        target_chunk_ms=1200,
+        max_chunk_ms=2000,
+        short_utt_min_ms=250,
+        short_utt_max_ms=600,
+        short_utt_silence_ms=150,
+        continuation_min_speech_ms=700,
+        continuation_max_silence_ms=300,
+        cooldown_ms=150,
+        preroll_ms=120,
+        rms_speech_threshold=350,
+    )
+    vad_buffer = SpeechChunkBuffer(vad_config)
 
-    FLUSH_BYTES   = int(BYTES_PER_SEC * FLUSH_AFTER_SECS)
-    SILENCE_BYTES = int(BYTES_PER_SEC * SILENCE_SECS)
-    MIN_BYTES     = int(BYTES_PER_SEC * MIN_SPEECH_SECS)
-    MIN_VOICED_BYTES = int(BYTES_PER_SEC * MIN_VOICED_SECS)
+    # Only drop truly non-meaningful artifacts — all real words pass to LLM
+    NOISE_TRANSCRIPTS = {".", "..", "...", "…", "?", "!"}
 
-    SILENCE_RMS_THR  = 800
-
-    NOISE_TRANSCRIPTS = {
-        "à²šà²°à²¿", "à²šà²°à²¿.", "à²šà²°à²¿ à²šà²¾à²°à³.", "à²šà²°à²¿ à²šà²¾à²°à³", "okay", "ok", "ok.",
-        "hmm", "hmm.", ".", "..", "...", "à²¸à²°à²¿", "à²¸à²°à²¿.", "à²¹à²¾à²‚", "à²¹à²¾à²‚.",
-        "thank you", "thanks", "yes", "no",
-    }
-
-    silence_run = 0
-
-    def _silence_rms_threshold() -> int:
-        try:
-            enc = (vobiz_encoding or "").lower()
-        except Exception:
-            enc = ""
-        if "audio/x-l16" in enc or "l16" in enc:
-            return 250
-        return SILENCE_RMS_THR
-
-    def chunk_is_silent(raw_chunk: bytes) -> bool:
-        try:
-            if "mulaw" in vobiz_encoding or "ulaw" in vobiz_encoding:
-                pcm = audioop.ulaw2lin(raw_chunk, 2)
-            else:
-                pcm = raw_chunk
-            return audioop.rms(pcm, 2) < _silence_rms_threshold()
-        except Exception:
-            return False
-
-    async def process_audio():
-        nonlocal audio_buffer, is_speaking, memory, state, silence_run
+    async def process_speech_segment(pcm_8k_segment: bytes):
+        """Process a complete speech segment emitted by VAD buffer."""
+        nonlocal is_speaking, processing_audio, memory, state
         nonlocal session_language, agent1_ran, agent1_context, in_agent3, agent3_state
-        nonlocal voiced_bytes, next_stt_allowed_ts, stt_backoff_secs, call_active
+        nonlocal next_stt_allowed_ts, stt_backoff_secs, call_active
         nonlocal pending_payload, pending_payload_sent
 
+        if processing_audio:
+            print(f"[PIPE] ⏭️  Skipped — already processing")
+            return
+        processing_audio = True
         is_speaking = True
 
-        buf_snapshot = bytes(audio_buffer)
-        voiced_snapshot = voiced_bytes
-        audio_buffer = bytearray()
-        silence_run = 0
-        voiced_bytes = 0
+        seg_ms = (len(pcm_8k_segment) // 2) * 1000 // 8000
+        pipe_t0 = time.time()
+        print(f"[PIPE] =====================================================")
+        print(f"[PIPE] 🔊 Segment  {len(pcm_8k_segment)}B / {seg_ms}ms  session_lang='{session_language}'  agent1_ran={agent1_ran}")
 
         now_ts = time.time()
         if now_ts < next_stt_allowed_ts:
+            wait_ms = round((next_stt_allowed_ts - now_ts) * 1000)
+            print(f"[PIPE] ⏳ Backoff active — skipping ({wait_ms}ms remaining)")
             is_speaking = False
-            return
-
-        if voiced_snapshot < MIN_VOICED_BYTES:
-            print(f"[Vobiz] Too little voiced audio ({voiced_snapshot}B) â€” skipping")
-            is_speaking = False
+            processing_audio = False
             return
 
         try:
-            buf_rms = audioop.rms(buf_snapshot, 2)
-            if buf_rms < max(150, int(_silence_rms_threshold() * 0.8)):
-                print(f"[Vobiz] RMS={buf_rms} noise â€” skip")
+            buf_rms = audioop.rms(pcm_8k_segment, 2)
+            if buf_rms < 200:
+                print(f"[PIPE] 🔇 RMS={buf_rms} below noise floor — skip")
                 is_speaking = False
+                processing_audio = False
                 return
-            print(f"[Vobiz] RMS={buf_rms} â€” sending to STT")
+            print(f"[PIPE] 🟢 RMS={buf_rms} — proceeding to STT")
         except Exception:
             pass
 
@@ -869,17 +857,15 @@ async def vobiz_stream(websocket: WebSocket):
         llm_time = 0.0
 
         try:
-            if "mulaw" in vobiz_encoding or "ulaw" in vobiz_encoding:
-                pcm_16k = mulaw_8k_to_pcm16_16k(buf_snapshot)
-            else:
-                pcm_16k = l16_8k_to_pcm16_16k(buf_snapshot)
-
+            # VAD buffer already emits PCM s16le 8kHz — just upsample to 16kHz
+            pcm_16k = l16_8k_to_pcm16_16k(pcm_8k_segment)
             wav_bytes = pcm16_to_wav_bytes(pcm_16k, 16000)
 
             t0 = time.time()
             _stt_lang = session_language if session_language else (
                 "kn-IN" if client_cfg.get("default_language", "kn") == "kn" else "en-IN"
             )
+            print(f"[PIPE] 🎙️  STT start  hint='{_stt_lang}'  wav={len(wav_bytes)}B")
             user_text, detected_lang = await run_stt_http(
                 wav_bytes,
                 language_code=_stt_lang,
@@ -887,7 +873,7 @@ async def vobiz_stream(websocket: WebSocket):
                 client_id=client_id,
             )
             stt_time = time.time() - t0
-            print(f"[Vobiz][STT] '{user_text}' ({detected_lang}) in {stt_time:.3f}s")
+            print(f"[PIPE] ✅ STT done  text='{user_text[:60]}'  lang='{detected_lang}'  latency={stt_time*1000:.0f}ms")
 
             if user_text.strip():
                 stt_backoff_secs = 0.0
@@ -899,10 +885,33 @@ async def vobiz_stream(websocket: WebSocket):
             if not user_text.strip():
                 return
 
+            # Script hallucination guard: STT returned non-Kannada/non-English script
+            # Short-circuit to "please repeat" TTS — skips LLM to save latency
+            if detected_lang == "unknown":
+                print(f"[PIPE] 🚨 HALLUCINATION detected  text='{user_text[:50]}'  stt_latency={stt_time*1000:.0f}ms  → short-circuit to repeat-TTS (no LLM)")
+                _repeat_lang = session_language if session_language else "kn"
+                _repeat_text = (
+                    "\u0C95\u0CCD\u0CB7\u0CAE\u0CBF\u0CB8\u0CBF, \u0CAE\u0CA4\u0CCD\u0CA4\u0CC6 \u0CB9\u0CC7\u0CB3\u0CBF."
+                    if _repeat_lang == "kn"
+                    else "Sorry, I didn't catch that. Could you say that again?"
+                )
+                async for chunk in cartesia_tts_chunked(_repeat_text, language=_repeat_lang):
+                    if not call_active:
+                        break
+                    out_chunk, _ = audioop.ratecv(chunk, 2, 1, 16000, 8000, None)
+                    await websocket.send_text(json.dumps({
+                        "event": "playAudio",
+                        "media": {
+                            "contentType": "audio/x-l16",
+                            "sampleRate": 8000,
+                            "payload": base64.b64encode(out_chunk).decode(),
+                        },
+                    }))
+                return
+
             stripped = user_text.strip()
-            is_numeric = stripped.replace(".", "").replace("।", "").isdigit()
-            if stripped.lower() in NOISE_TRANSCRIPTS or (len(stripped) <= 2 and not is_numeric):
-                print(f"[Vobiz][STT] Noise transcript dropped: '{user_text}'")
+            if stripped in NOISE_TRANSCRIPTS:
+                print(f"[PIPE] 🔕 NOISE filtered  text='{user_text}'")
                 return
 
             if not call_active:
@@ -912,11 +921,11 @@ async def vobiz_stream(websocket: WebSocket):
             # ── Language lock: use session_language if already set; only use STT on first turn ──
             if session_language:
                 effective_lang = session_language
-                print(f"[Vobiz][LANG] Session locked to {session_language} (ignoring STT {detected_lang})")
+                print(f"[PIPE] 🔐 Lang LOCKED  session='{session_language}'  stt_detected='{detected_lang}'  → using '{effective_lang}'")
             else:
                 effective_lang = "en" if str(detected_lang).lower().startswith("en") else "kn"
                 session_language = effective_lang
-                print(f"[Vobiz][LANG] First turn — locked to {session_language} from STT {detected_lang}")
+                print(f"[PIPE] 🔑 Lang SET (first turn)  stt='{detected_lang}'  → locked='{session_language}'")
 
             # ── Security guardrail pre-check (before any LLM call) ──────────
             _blocked, _guard_response = check_guardrails(user_text, lang=effective_lang)
@@ -1023,9 +1032,10 @@ async def vobiz_stream(websocket: WebSocket):
                 effective_lang   = _lang_switch
 
             llm_time = time.time() - t1
-            print(f"[Vobiz][LLM] '{response_text}' in {llm_time:.3f}s")
+            print(f"[PIPE] 🧠 LLM done  latency={llm_time*1000:.0f}ms  response='{response_text[:80]}'")
 
             agent_name = (f"agent3_{effective_lang}") if in_agent3 else (f"agent2_{effective_lang}")
+            print(f"[PIPE] 📎 Agent={agent_name}  action='{parsed.get('action','-')}'  done={parsed.get('done',False)}")
             asyncio.create_task(asyncio.to_thread(log_llm_event, {
                 "session_id":   session_key,
                 "client_id":    client_id,
@@ -1147,7 +1157,9 @@ async def vobiz_stream(websocket: WebSocket):
                     await websocket.send_text(frame)
 
             tts_time = time.time() - t2
-            print(f"[Vobiz][TTS] {tts_total_bytes}B PCM in {tts_time:.3f}s")
+            total_ms = round((time.time() - pipe_t0) * 1000)
+            print(f"[PIPE] 🔊 TTS done  latency={tts_time*1000:.0f}ms  bytes={tts_total_bytes}")
+            print(f"[PIPE] ⏱️  TOTAL  stt={stt_time*1000:.0f}ms  llm={llm_time*1000:.0f}ms  tts={tts_time*1000:.0f}ms  end_to_end={total_ms}ms")
 
             log_interaction(
                 user_text=user_text, assistant_text=response_text,
@@ -1189,10 +1201,11 @@ async def vobiz_stream(websocket: WebSocket):
 
         except Exception as e:
             import traceback
-            print(f"[Vobiz][ERROR] process_audio: {e}")
+            print(f"[Vobiz][ERROR] process_speech_segment: {e}")
             traceback.print_exc()
         finally:
             is_speaking = False
+            processing_audio = False
             if session_key and session_key != "unknown":
                 await asyncio.to_thread(session_store.save_session, session_key, state, memory)
 
@@ -1254,11 +1267,11 @@ async def vobiz_stream(websocket: WebSocket):
                 stream_sid = info.get("streamId", info.get("streamSid", "unknown"))
                 fmt = info.get("mediaFormat", {})
                 vobiz_encoding = fmt.get("encoding", "audio/x-mulaw").lower()
-                _actual_bps = 8000 if ("mulaw" in vobiz_encoding or "ulaw" in vobiz_encoding) else 16000
-                FLUSH_BYTES      = int(_actual_bps * FLUSH_AFTER_SECS)
-                SILENCE_BYTES    = int(_actual_bps * SILENCE_SECS)
-                MIN_BYTES        = int(_actual_bps * MIN_SPEECH_SECS)
-                MIN_VOICED_BYTES = int(_actual_bps * MIN_VOICED_SECS)
+                # Adjust VAD RMS threshold for L16 (lower amplitude than decoded mulaw)
+                if "audio/x-l16" in vobiz_encoding or "l16" in vobiz_encoding:
+                    vad_buffer.set_rms_speech_threshold(250)
+                else:
+                    vad_buffer.set_rms_speech_threshold(350)
 
                 # ── DID resolution: map from /answer, then start event fields ─
                 did_number = (
@@ -1349,33 +1362,27 @@ async def vobiz_stream(websocket: WebSocket):
                 if not payload_b64:
                     continue
 
-                chunk = base64.b64decode(payload_b64)
-                audio_buffer.extend(chunk)
+                raw_chunk = base64.b64decode(payload_b64)
 
-                if chunk_is_silent(chunk):
-                    silence_run += len(chunk)
+                # Convert to PCM s16le 8kHz for VAD (regardless of source encoding)
+                if "mulaw" in vobiz_encoding or "ulaw" in vobiz_encoding:
+                    pcm_chunk = audioop.ulaw2lin(raw_chunk, 2)
                 else:
-                    silence_run = 0
-                    voiced_bytes += len(chunk)
+                    pcm_chunk = raw_chunk
 
-                buffer_full = len(audio_buffer) >= FLUSH_BYTES
-                silence_enough = (
-                    silence_run >= SILENCE_BYTES
-                    and voiced_bytes >= MIN_VOICED_BYTES
-                    and len(audio_buffer) >= MIN_BYTES
-                )
-                has_some_silence = silence_run >= int(SILENCE_BYTES * 0.4)
-
-                if (buffer_full and has_some_silence and voiced_bytes >= MIN_VOICED_BYTES) and not is_speaking:
-                    asyncio.create_task(process_audio())
-                elif silence_enough and not is_speaking:
-                    asyncio.create_task(process_audio())
+                # Feed to VAD — returns list of complete speech segments
+                segments = vad_buffer.ingest(pcm_chunk)
+                for segment in segments:
+                    if not is_speaking and not processing_audio:
+                        asyncio.create_task(process_speech_segment(segment))
 
             elif event == "stop":
                 print("[Vobiz] Stream stop received")
                 call_active = False
-                if len(audio_buffer) >= MIN_BYTES and not is_speaking:
-                    await process_audio()
+                # Flush any remaining speech from VAD buffer
+                final_segment = vad_buffer.flush()
+                if final_segment and not is_speaking:
+                    await process_speech_segment(final_segment)
                 break
 
             elif event == "mark":

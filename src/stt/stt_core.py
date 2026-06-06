@@ -25,15 +25,38 @@ from .stt_metrics import (
 
 
 def _normalize_lang_to_en_or_kn(*, detected_lang: str, transcript: str) -> str:
+    """Determine language from transcript script + STT hint.
+
+    Priority: script detection > STT language_code.
+    Returns "unknown" if transcript contains non-Kannada/non-Latin Indic scripts
+    (hallucination indicator — e.g. Bengali/Odia/Hindi/Tamil/Telugu text from
+    a Kannada/English speaker).
+    """
+    text = transcript or ""
+
+    # Script-first: Kannada script present → definitely Kannada
+    if re.search(r"[\u0C80-\u0CFF]", text):
+        print(f"[STT][NORM] Kannada script → kn-IN  (sarvam_said='{detected_lang}')")
+        return "kn-IN"
+
+    # Hallucination guard: non-Latin, non-Kannada Indic script = garbage
+    # Covers: Devanagari (0900-097F), Bengali (0980-09FF), Gurmukhi (0A00-0A7F),
+    #         Gujarati (0A80-0AFF), Oriya (0B00-0B7F), Tamil (0B80-0BFF),
+    #         Telugu (0C00-0C7F), Malayalam (0D00-0D7F)
+    if re.search(r"[\u0900-\u0C7F\u0D00-\u0D7F]", text):
+        print(f"[STT][NORM] ⚠️ Non-Kannada Indic script → HALLUCINATION  text='{text[:50]}'  sarvam_said='{detected_lang}'")
+        return "unknown"
+
+    # Fall back to STT-reported language
     dl = (detected_lang or "").strip().lower()
     if dl.startswith("kn"):
+        print(f"[STT][NORM] ASCII text, trusting sarvam kn → kn-IN")
         return "kn-IN"
     if dl.startswith("en"):
+        print(f"[STT][NORM] ASCII text, sarvam en → en-IN")
         return "en-IN"
 
-    text = transcript or ""
-    if re.search(r"[\u0C80-\u0CFF]", text):
-        return "kn-IN"
+    print(f"[STT][NORM] No match, default → en-IN  (sarvam_said='{detected_lang}')")
     return "en-IN"
 
 
@@ -315,9 +338,18 @@ async def _sarvam_attempt(audio_bytes: bytes, filename: str, api_key: str, langu
     headers = {"api-subscription-key": api_key}
     data = aiohttp.FormData()
     data.add_field("model", "saaras:v3")
-    data.add_field("language_code", "unknown")  # Always auto-detect; session lock is for routing only
+    # Hint Sarvam with locked language when available — reduces hallucinations
+    _hint = "unknown"
+    if language_code and language_code != "unknown":
+        lc = language_code.lower()
+        if lc.startswith("kn"):
+            _hint = "kn-IN"
+        elif lc.startswith("en"):
+            _hint = "en-IN"
+    data.add_field("language_code", _hint)
     data.add_field("mode", "transcribe")
     data.add_field("file", audio_bytes, filename=filename, content_type="audio/wav")
+    print(f"[STT][Sarvam] → Sending  hint='{_hint}'  audio={len(audio_bytes)}B  file='{filename}'")
     try:
         async with session.post(url, headers=headers, data=data) as resp:
             body = await resp.text()
@@ -328,10 +360,13 @@ async def _sarvam_attempt(audio_bytes: bytes, filename: str, api_key: str, langu
                 except Exception:
                     payload = {}
                 text = (payload.get("transcript") or "").strip()
+                raw_sarvam_lang = payload.get("language_code", "")
+                print(f"[STT][Sarvam] ← Raw  transcript='{text[:60]}'  sarvam_lang='{raw_sarvam_lang}'")
                 lang = _normalize_lang_to_en_or_kn(
-                    detected_lang=payload.get("language_code", ""),
+                    detected_lang=raw_sarvam_lang,
                     transcript=text,
                 )
+                print(f"[STT][Sarvam] ✓ Final  lang='{lang}'")
                 return True, text, lang, "", "", False
             timed_out = resp.status == 408
             print(f"[STT][Sarvam] \u274c HTTP {resp.status}: {body[:200]}")
