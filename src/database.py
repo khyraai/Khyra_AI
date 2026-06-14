@@ -280,8 +280,11 @@ _SCHEMA_STATEMENTS = [
     "ALTER TABLE appointments      ADD COLUMN IF NOT EXISTS sync_status    TEXT",
     "ALTER TABLE appointments      ADD COLUMN IF NOT EXISTS sync_error     TEXT",
     "ALTER TABLE appointments      ADD COLUMN IF NOT EXISTS retry_count    INTEGER DEFAULT 0",
-    "ALTER TABLE call_logs         ADD COLUMN IF NOT EXISTS total_tokens   INTEGER DEFAULT 0",
-    "ALTER TABLE call_logs         ADD COLUMN IF NOT EXISTS transcript     TEXT",
+    "ALTER TABLE call_logs         ADD COLUMN IF NOT EXISTS total_tokens      INTEGER DEFAULT 0",
+    "ALTER TABLE call_logs         ADD COLUMN IF NOT EXISTS transcript        TEXT",
+    # N8N fail-safe tracking
+    "ALTER TABLE call_logs         ADD COLUMN IF NOT EXISTS n8n_triggered     BOOLEAN DEFAULT FALSE",
+    "ALTER TABLE call_logs         ADD COLUMN IF NOT EXISTS n8n_triggered_at  TEXT",
     # Multi-client isolation migrations
     "ALTER TABLE appointments      ADD COLUMN IF NOT EXISTS client_id      TEXT",
     "ALTER TABLE agent_appointments ADD COLUMN IF NOT EXISTS client_id     TEXT",
@@ -693,6 +696,37 @@ def log_call_end(
             session_id,
         ))
         print(f"[DB] log_call_end: updated {cur.rowcount} row(s)")
+
+
+# ---------------------------------------------------------------------------
+# N8N webhook audit
+# ---------------------------------------------------------------------------
+def mark_n8n_triggered(session_id: str, success: bool):
+    """
+    Record whether the n8n webhook was successfully delivered for this call.
+
+    Sets n8n_triggered = success and n8n_triggered_at = now on the call_logs
+    row identified by session_id.  Safe to call even if the row does not exist
+    yet (UPDATE will simply affect 0 rows and we log a warning).
+    """
+    now = datetime.now().isoformat()
+    status_label = "SUCCESS" if success else "FAILED"
+    try:
+        with get_conn() as cur:
+            cur.execute(
+                """
+                UPDATE call_logs
+                SET n8n_triggered = %s, n8n_triggered_at = %s
+                WHERE session_id = %s
+                """,
+                (success, now, session_id),
+            )
+            if cur.rowcount == 0:
+                print(f"[DB] mark_n8n_triggered: no call_logs row for session={session_id} — skipping")
+            else:
+                print(f"[DB] mark_n8n_triggered: session={session_id} → {status_label}")
+    except Exception as e:
+        print(f"[DB] mark_n8n_triggered error: {e}")
 
 
 # ---------------------------------------------------------------------------

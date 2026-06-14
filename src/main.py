@@ -1,4 +1,4 @@
-﻿import os
+import os
 import time
 import base64
 import json
@@ -40,7 +40,7 @@ from stt import (
     VadBufferConfig,
 )
 from tts import cartesia_tts_collect, cartesia_tts_chunked, cartesia_tts_stream
-from database import check_availability, get_next_available_slot, verify_appointment_for_cancellation, update_appointment_status, reschedule_appointment, log_call_start, log_call_end, log_llm_event, save_agent_appointment
+from database import check_availability, get_next_available_slot, verify_appointment_for_cancellation, update_appointment_status, reschedule_appointment, log_call_start, log_call_end, log_llm_event, save_agent_appointment, mark_n8n_triggered
 from client_config import get_config_by_did, get_default_config
 
 # -----------------------------
@@ -1394,18 +1394,66 @@ async def vobiz_stream(websocket: WebSocket):
         print(f"[Vobiz] Stream error: {e}")
     finally:
         call_active = False
-        print(f"[Vobiz] Call ended â€” callSid={call_sid}")
+        print(f"[Vobiz] Call ended — callSid={call_sid}")
 
-        if pending_payload and not pending_payload_sent:
+        # ── N8N Fail-Safe ─────────────────────────────────────────────────────
+        # Goal: ensure n8n is ALWAYS attempted for any call where at least a
+        # partial booking intent was detected (patient gave name + phone).
+        #
+        # Case A: pending_payload already built (happy path — full confirmation)
+        # Case B: pending_payload is None but partial data exists → build a
+        #         best-effort payload so n8n / the team can follow up manually.
+        # ─────────────────────────────────────────────────────────────────────
+
+        # Case B — partial booking fallback
+        if not pending_payload and state.get("name") and state.get("phone"):
             try:
-                pending_payload_sent = True
-                asyncio.create_task(asyncio.to_thread(send_to_n8n_webhook_sync, pending_payload))
+                _fallback_state = dict(state)
+                _fallback_state.setdefault("call_sid", session_key)
+                _fallback_notes = (
+                    "PARTIAL BOOKING — call ended before full confirmation. "
+                    "Missing fields may need manual follow-up. "
+                    f"Language: {session_language or 'unknown'}."
+                )
+                pending_payload = build_scheduling_payload(
+                    event_type="appointment_create",
+                    state=_fallback_state,
+                    phone=caller_phone,
+                    confirmation_status="partial",
+                    notes=_fallback_notes,
+                    language=session_language or "en",
+                    agent1_context=agent1_context,
+                    client_id=client_id,
+                )
+                print(f"[N8N Fail-Safe] Built partial fallback payload for session={session_key}")
+            except Exception as _fe:
+                print(f"[N8N Fail-Safe] Could not build fallback payload: {_fe}")
+
+        # Attempt n8n (Case A or Case B)
+        _n8n_attempted = False
+        _n8n_ok = False
+        if pending_payload and not pending_payload_sent:
+            _n8n_attempted = True
+            pending_payload_sent = True
+            try:
+                # Run synchronously so we capture the bool result before
+                # mark_n8n_triggered writes it to the DB.
+                _n8n_ok = await asyncio.to_thread(send_to_n8n_webhook_sync, pending_payload)
+                # Save to local DB regardless of n8n outcome
                 asyncio.create_task(asyncio.to_thread(
                     save_agent_appointment, pending_payload,
                     session_key, client_id,
                 ))
-            except Exception as e:
-                print(f"[Vobiz] Webhook send error: {e}")
+            except Exception as _we:
+                print(f"[Vobiz] Webhook send error: {_we}")
+
+        # Record outcome in call_logs (only if a payload was relevant for this call)
+        if _n8n_attempted or pending_payload:
+            try:
+                await asyncio.to_thread(mark_n8n_triggered, session_key, _n8n_ok)
+            except Exception as _me:
+                print(f"[Vobiz] mark_n8n_triggered error: {_me}")
+        # ── End N8N Fail-Safe ──────────────────────────────────────────────────
 
         try:
             if call_sid and call_sid != "unknown":

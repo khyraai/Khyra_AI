@@ -378,25 +378,37 @@ def trigger_vobiz_transfer(call_uuid: str, metadata: dict):
 # -----------------------------------------------------------------------
 # N8N Webhook Placeholder
 # -----------------------------------------------------------------------
-def send_to_n8n_webhook_sync(payload: dict):
+def send_to_n8n_webhook_sync(payload: dict) -> bool:
+    """
+    Send payload to the n8n webhook URL (synchronous, runs in a thread).
+
+    Returns:
+        True  — HTTP 200 / 201 / 202 received (n8n accepted the payload).
+        False — URL not configured, HTTP error, or any exception.
+    """
     from dotenv import load_dotenv
     import requests
     load_dotenv()
-    
+
     webhook_url = os.getenv("N8N_WEBHOOK_URL", "")
-    
+
     if not webhook_url:
         print("🟡 [N8N] Webhook URL not set (N8N_WEBHOOK_URL). Payload logged but not sent.")
-        return
+        return False
 
     try:
         print(f"🌐 [N8N] Sending payload to {webhook_url}...")
         resp = requests.post(webhook_url, json=payload, timeout=5)
         if resp.status_code in (200, 201, 202):
-            print("✅ [N8N] Payload delivered successfully!")
+            print(f"✅ [N8N] Payload delivered successfully! (HTTP {resp.status_code})")
+            return True
         else:
-            print(f"❌ [N8N] Delivery failed — HTTP {resp.status_code}: {resp.text}")
+            print(f"❌ [N8N] Delivery failed — HTTP {resp.status_code}: {resp.text[:200]}")
+            return False
     except requests.exceptions.Timeout:
-        print("❌ [N8N] Request timed out.")
+        print("❌ [N8N] Request timed out after 5s.")
+        return False
     except Exception as e:
         print(f"❌ [N8N] Request error: {e}")
+        return False
+
