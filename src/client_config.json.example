@@ -1,7 +1,9 @@
 {
-  "+91XXXXXXXXXX": {
+  "__COMMENT_SINGLE_DOCTOR__": "For single-doctor clinics, set clinic_type to 'single' (or omit it — single is the default).",
+  "+91XXXXXXXXXX_SINGLE": {
     "client_id": "your_client_id",
     "clinic_name": "Your Clinic Name",
+    "clinic_type": "single",
     "doctor_name": "Doctor Full Name",
     "doctor_qualifications": "Your qualifications",
     "address": "Your clinic address",
@@ -12,5 +14,27 @@
     "default_language": "kn",
     "emergency_transfer_number": "+91XXXXXXXXXX",
     "connection_id": "your_client_id"
+  },
+
+  "__COMMENT_MULTI_DOCTOR__": "For multi-doctor clinics, set clinic_type to 'multi', add primary_doctor and doctors list.",
+  "+91YYYYYYYYYY_MULTI": {
+    "client_id": "your_multi_client_id",
+    "clinic_name": "Your Multi-Doctor Clinic Name",
+    "clinic_type": "multi",
+    "primary_doctor": "Doctor Default Name",
+    "doctors": [
+      "Doctor Name One",
+      "Doctor Name Two",
+      "Doctor Name Three"
+    ],
+    "doctor_qualifications": "Various qualifications",
+    "address": "Your clinic address",
+    "timings": "Monday to Saturday — 10:00 AM to 1:00 PM and 4:00 PM to 7:00 PM. Closed on Sunday.",
+    "doctor_mobile": "+91YYYYYYYYYY",
+    "consultation_fee_min": 200,
+    "consultation_fee_max": 500,
+    "default_language": "en",
+    "emergency_transfer_number": "+91XXXXXXXXXX",
+    "connection_id": "your_multi_client_id"
   }
 }
