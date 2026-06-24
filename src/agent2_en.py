@@ -10,6 +10,7 @@ Routing is controlled by main.py based on session_language, NOT inside this modu
 """
 
 import asyncio
+from datetime import datetime
 from utils import parse_llm_json
 from llm import LLM_MODEL
 
@@ -124,6 +125,14 @@ APPOINTMENT QUESTION ORDER (IMPORTANT):
   3) reason
   4) date
   5) time
+
+AGE HANDLING RULES (IMPORTANT):
+- If the user states their age INDIRECTLY — for example by giving a birth year ("I was born in 2000", "born in 1998", "I'm a 2001 baby", "born 1995") — CALCULATE their actual age from today's year and store the computed age as a plain number (e.g. if today is 2026 and they said born in 2000, store age = 26). NEVER store a 4-digit birth year as the age.
+- If the user states an age that is greater than 110 (e.g. "125 years old", "115", "120"), this is UNUSUALLY HIGH and must be confirmed before storing:
+  1) Ask: "Just to confirm — did you say you are <stated_age> years old? That seems unusual. Could you confirm?" (e.g. "Just to confirm — did you say you are 125 years old? That seems unusual. Could you confirm?")
+  2) Set state.age_confirmation_pending = <stated_age> (the number the user said) and do NOT store state.age yet.
+  3) If the user CONFIRMS (yes / correct / that's right): store state.age = <stated_age>, clear state.age_confirmation_pending = null, then move to the next field.
+  4) If the user gives a DIFFERENT age: store that new age in state.age (if ≤110 store directly; if >110 repeat the confirmation loop), clear state.age_confirmation_pending = null.
 
 PROCEDURE TRIAGE (IMPORTANT):
 - If the reason indicates a PROCEDURE (examples: root canal, braces, aligners, implants, implant, surgery, extraction, wisdom tooth surgery), do NOT directly book that procedure.
@@ -317,6 +326,7 @@ OUTPUT FORMAT (STRICT JSON):
   "state": {{
     "name": "<string or null>",
     "age": <number or null>,
+    "age_confirmation_pending": <number or null>,
     "date": "<string YYYY-MM-DD or null>",
     "time": "<string or null>",
     "reason": "<string or null>",
@@ -374,6 +384,7 @@ async def run_agent2_en(user_text: str, memory: list, state: dict, agent1_contex
         "date",
         "time",
         "age",
+        "age_confirmation_pending",
         "requested_procedure",
         "visited_before",
         "doctor_advised_procedure",
@@ -390,5 +401,19 @@ async def run_agent2_en(user_text: str, memory: list, state: dict, agent1_contex
             continue
         if str(val).strip() and str(val).strip().lower() != "unknown":
             state[k] = val
+
+    # ── Post-processing: birth-year → age safety net ──────────────────────
+    # If the LLM stored a 4-digit year (1900–current_year) as `age`, convert it.
+    raw_age = state.get("age")
+    if raw_age is not None:
+        try:
+            age_int = int(raw_age)
+            current_year = datetime.now().year
+            if 1900 <= age_int <= current_year:          # looks like a birth year
+                computed_age = current_year - age_int
+                print(f"[Agent-2-EN] ℹ️ Detected birth year {age_int} stored as age — converting to {computed_age}")
+                state["age"] = computed_age
+        except (TypeError, ValueError):
+            pass
 
     return parsed.get("response", "Okay."), state, parsed

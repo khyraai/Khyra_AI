@@ -210,7 +210,9 @@ def build_scheduling_payload(
         "connection_id": state.get("connection_id", state.get("call_sid", "")),
         "google_event_id": "",
         "patient_name": state.get("name", ""),
-        "patient_phone": phone or state.get("phone", ""),
+        "patient_phone": (lambda p: ("+" + p) if p and not p.startswith("+") else p)(
+            (phone or state.get("phone", "") or "").strip()
+        ),
         "start_time": datetime_iso or "",
         "end_time": end_time_iso or "",
         "appointment_type": appt_type,

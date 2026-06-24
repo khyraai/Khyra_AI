@@ -10,6 +10,7 @@ Routing is controlled by main.py based on session_language, NOT inside this modu
 """
 
 import asyncio
+from datetime import datetime
 from utils import parse_llm_json
 from llm import LLM_MODEL
 
@@ -92,6 +93,14 @@ APPOINTMENT QUESTION ORDER (IMPORTANT):
   3) reason
   4) date
   5) time
+
+AGE HANDLING RULES (IMPORTANT):
+- If the user states their age INDIRECTLY — for example by giving a birth year ("ನಾನು 2000ದಲ್ಲಿ ಹುಟ್ಟಿದ್ದೇನೆ", "I was born in 2000", "born 1998", "2001 ಹುಟ್ಟಿದ್ದು") — CALCULATE their actual age from today's year and store the computed age as a number (e.g. if today is 2026 and they said born in 2000, store age = 26). NEVER store a 4-digit birth year as the age.
+- If the user states an age that is greater than 80 (e.g., "125 years", "115", "120"), this is UNUSUALLY HIGH and must be confirmed:
+  1) Ask: "ನೀವು <stated_age> ವರ್ಷ ಎಂದು ಹೇಳಿದಿರಾ? ಖಚಿತಪಡಿಸಬಹುದಾ?" (e.g. "ನೀವು 125 ವರ್ಷ ಎಂದು ಹೇಳಿದಿರಾ? ಖಚಿತಪಡಿಸಬಹುದಾ?")
+  2) Set state.age_confirmation_pending = <stated_age> (the number the user said) and do NOT store state.age yet.
+  3) If the user CONFIRMS (ಹಾ / ಹೌದು / ಸರಿ / yes): store state.age = <stated_age>, clear state.age_confirmation_pending = null, continue.
+  4) If the user gives a DIFFERENT age: store that new age in state.age (if it is ≤110 store directly; if >110 repeat the confirmation loop), clear state.age_confirmation_pending = null.
 
 APPOINTMENT REQUIRED FIELDS:
 1. name
@@ -249,6 +258,7 @@ OUTPUT FORMAT (STRICT JSON):
   "state": {{
     "name": "<string or null>",
     "age": <number or null>,
+    "age_confirmation_pending": <number or null>,
     "date": "<string YYYY-MM-DD or null>",
     "time": "<English HH:MM AM/PM only, e.g. '10:00 AM', '4:30 PM', or null>",
     "reason": "<string or null>",
@@ -298,7 +308,7 @@ async def run_agent2_kn(user_text: str, memory: list, state: dict, agent1_contex
 
     parsed = parse_llm_json(full_response)
     new_state = parsed.get("state", {})
-    for k in ["name", "doctor", "reason", "date", "time", "age", "confirmation_pending"]:
+    for k in ["name", "doctor", "reason", "date", "time", "age", "age_confirmation_pending", "confirmation_pending"]:
         val = new_state.get(k)
         if val is None:
             continue
@@ -322,5 +332,19 @@ async def run_agent2_kn(user_text: str, memory: list, state: dict, agent1_contex
         if sval in {"ತಿಳಿದಿಲ್ಲ", "ಗೊತ್ತಿಲ್ಲ"}:
             continue
         state[k] = val
+
+    # ── Post-processing: birth-year → age safety net ──────────────────────
+    # If the LLM stored a 4-digit year (1900–current_year) as `age`, convert it.
+    raw_age = state.get("age")
+    if raw_age is not None:
+        try:
+            age_int = int(raw_age)
+            current_year = datetime.now().year
+            if 1900 <= age_int <= current_year:          # looks like a birth year
+                computed_age = current_year - age_int
+                print(f"[Agent-2-KN] ℹ️ Detected birth year {age_int} stored as age — converting to {computed_age}")
+                state["age"] = computed_age
+        except (TypeError, ValueError):
+            pass
 
     return parsed.get("response", "ಸರಿ"), state, parsed
