@@ -797,7 +797,7 @@ async def vobiz_stream(websocket: WebSocket):
         min_speech_ms=350,
         silence_end_ms=800,
         target_chunk_ms=1200,
-        max_chunk_ms=10000,
+        max_chunk_ms=15000,
         short_utt_min_ms=250,
         short_utt_max_ms=600,
         short_utt_silence_ms=150,
