@@ -1,4 +1,4 @@
-﻿"""
+"""
 agent1.py — Intent Router (Agent-1)
 
 Exports:
@@ -14,8 +14,12 @@ from llm import LLM_MODEL
 # -----------------------------------------------------------------------
 # Prompt
 # -----------------------------------------------------------------------
-def build_agent1_prompt() -> str:
-    return """
+def build_agent1_prompt(config: dict = None) -> str:
+    if config is None:
+        config = {}
+    clinic_name = config.get("clinic_name", "our clinic")
+    
+    return f"""
 ROLE:
 You are a coarse-grained Intent Router for a dental Centre. Your only job is to route the input to the correct next agent.
 
@@ -161,7 +165,7 @@ treatment:
 RESPONSE RULE:
 
 - ONLY greeting and emergency should have response:
-  - Greeting: "ನಮಸ್ಕಾರ, Doctor Deepti's Dental and Orthodontic Centre ಗೆ ಸ್ವಾಗತ. ನಾನು ದಿವ್ಯ. ಏನು ಸಹಾಯ ಬೇಕಿತ್ತು?"
+  - Greeting: "ನಮಸ್ಕಾರ, {clinic_name} ಗೆ ಸ್ವಾಗತ. ನಾನು ದಿವ್ಯ. ಏನು ಸಹಾಯ ಬೇಕಿತ್ತು?"
   - Emergency: "ಡಾಕ್ಟರ್ ಗೆ ಕನೆಕ್ಟ್ ಮಾಡ್ತೀವಿ ಒಂದು ನಿಮಿಷ."
 
 - All others:
@@ -186,11 +190,10 @@ Rules:
    → Choose the DOMINANT language.
 
 4. Default fallback (unclear / empty):
-   → "kn"
+   → "en"
 
 IMPORTANT:
 - NEVER ask the user for their language preference.
-- Greeting inputs MUST return "unknown".
 
 --------------------------------------------------
 
@@ -206,37 +209,37 @@ SECURITY GUARDRAILS (ABSOLUTE — OVERRIDE EVERYTHING):
 OUTPUT FORMAT (STRICT JSON):
 
 Standard Output:
-{
+{{
   "intent": "greeting | appointment | enquiry | emergency | cancel_reschedule",
-  "context": {
+  "context": {{
     "treatment": "<procedure or empty>",
     "query_type": "price | timing | general | none"
-  },
+  }},
   "summary": "<short english summary>",
   "response": "<Kannada greeting or empty>",
   "language": "kn | en"
-}
+}}
 
 EMERGENCY ONLY Output (Ignore Standard Schema):
-{
+{{
   "intent": "emergency",
   "confidence": 0.95,
   "action": "TRANSFER_CALL",
   "response": "ಡಾಕ್ಟರ್ ಗೆ ಕನೆಕ್ಟ್ ಮಾಡ್ತೀವಿ ಒಂದು ನಿಮಿಷ.",
-  "metadata": {
+  "metadata": {{
     "reason": "<reason>",
     "transfer_target": "+918660033297"
-  }
-}
+  }}
+}}
 """
 
 
 # -----------------------------------------------------------------------
 # Runner
 # -----------------------------------------------------------------------
-async def run_agent1(user_text: str, memory: list, groq_client) -> dict:
+async def run_agent1(user_text: str, memory: list, groq_client, config: dict = None) -> dict:
     """Runs Agent-1 to extract intent and context."""
-    system_prompt = build_agent1_prompt()
+    system_prompt = build_agent1_prompt(config=config)
     messages = [{"role": "system", "content": system_prompt}] + memory + [{"role": "user", "content": user_text}]
     try:
         chat_completion = await asyncio.wait_for(
