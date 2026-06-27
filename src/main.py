@@ -87,8 +87,8 @@ async def clear_session(session_id: str = ""):
 # -----------------------------------------------------------------------
 # Local wrappers â€” bind shared clients so callers need no arguments
 # -----------------------------------------------------------------------
-async def run_agent1(user_text: str, memory: list, config: dict = None) -> dict:
-    return await _run_agent1(user_text, memory, groq_client, config=config)
+async def run_agent1(user_text: str, memory: list) -> dict:
+    return await _run_agent1(user_text, memory, groq_client)
 
 def _all_appointment_fields_present(st: dict) -> bool:
     """True when name, age, reason, date AND time are all non-empty."""
@@ -947,7 +947,7 @@ async def vobiz_stream(websocket: WebSocket):
             # ────────────────────────────────────────────────────────────────
 
             if not agent1_ran:
-                agent1_parsed = await run_agent1(user_text, memory, config=client_cfg)
+                agent1_parsed = await run_agent1(user_text, memory)
                 intent = agent1_parsed.get("intent", "enquiry")
                 agent1_context = agent1_parsed.get("context", {})
                 print(f" [VOBIZ ROUTER] Intent: {intent} | Summary: {agent1_parsed.get('summary')}")
@@ -960,10 +960,9 @@ async def vobiz_stream(websocket: WebSocket):
                 effective_lang = session_language if session_language else effective_lang
 
                 if intent == "greeting":
-                    clinic_name = client_cfg.get("clinic_name", "our clinic")
                     response_text = agent1_parsed.get(
                         "response",
-                        f"Hello! Welcome to {clinic_name}. How can I help you today?" if effective_lang == "en" else f"ನಮಸ್ಕಾರ, {clinic_name} ಗೆ ಸ್ವಾಗತ. ನಾನು ನಿಮಗೆ ಹೇಗೆ ಸಹಾಯ ಮಾಡಲಿ?"
+                        "Hello! Welcome to Doctor Deepti's Dental and Orthodontic Clinic. How can I help you today?" if effective_lang == "en" else "à²¨à²®à²¸à³à²•à²¾à²°, à²¡à²¾à²•à³à²Ÿà²°à³ à²¦à³€à²ªà³à²¤à²¿ à²…à²µà²° à²¡à³†à²‚à²Ÿà²²à³ à²®à²¤à³à²¤à³ à²†à²°à³à²¥à³Šà²¡à²¾à²‚à²Ÿà²¿à²•à³ à²•à³à²²à²¿à²¨à²¿à²•à³ à²—à³† à²¸à³à²µà²¾à²—à²¤. à²¨à²¾à²¨à³ à²¨à²¿à²®à²—à³† à²¹à³‡à²—à³† à²¸à²¹à²¾à²¯ à²®à²¾à²¡à²²à²¿?"
                     )
                     parsed = agent1_parsed
                 elif intent == "system_check":
