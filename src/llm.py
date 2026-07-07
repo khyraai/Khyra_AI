@@ -20,7 +20,6 @@ Custom kwargs stripped before Groq call (for metrics only):
 import os
 import time
 import asyncio
-import itertools
 import threading
 from typing import Any
 
@@ -145,8 +144,13 @@ class LLMPool:
         self._keys    = _load_keys()
         self._clients = [AsyncGroq(api_key=k) for k in self._keys]
         self._sems    = [asyncio.Semaphore(LLM_MAX_CONCURRENT_PER_KEY) for _ in self._keys]
-        self._cycle   = itertools.cycle(range(len(self._keys)))
-        self._lock    = asyncio.Lock()
+        # ── Global round-robin counter ──────────────────────────────────────
+        # Use threading.Lock (NOT asyncio.Lock) so this is safe to call from
+        # any async context, including before the event loop starts.  A plain
+        # integer + lock gives us a truly global, monotonically-advancing
+        # index that is shared across ALL sessions and concurrent calls.
+        self._rr_lock  = threading.Lock()   # sync lock — safe from async too
+        self._rr_index = 0                  # next key to use (mod num_keys)
         self.chat     = _Chat(self)
         print(
             f"[LLM Pool] ✅ {len(self._keys)} key(s) loaded | "
@@ -158,13 +162,23 @@ class LLMPool:
     def num_keys(self) -> int:
         return len(self._keys)
 
-    async def _next(self) -> int:
-        async with self._lock:
-            return next(self._cycle)
+    def _next(self) -> int:
+        """Advance and return the next key index — globally, thread-safe.
+
+        Uses a threading.Lock so this works correctly regardless of whether
+        it is called from an async context or a sync thread, and regardless
+        of which asyncio event loop is currently running.  The counter
+        increments monotonically across ALL sessions and concurrent calls,
+        giving true global round-robin rotation.
+        """
+        with self._rr_lock:
+            idx = self._rr_index % len(self._keys)
+            self._rr_index += 1
+            return idx
 
     async def _execute(self, **kwargs) -> Any:
         """
-        Execute a chat completion with round-robin key selection.
+        Execute a chat completion with global round-robin key selection.
         On 429/rate-limit: rotate to the next key and retry.
         """
         agent_name = kwargs.pop("_agent_name", "unknown")
@@ -173,7 +187,7 @@ class LLMPool:
         start   = time.time()
         retries = 0
         rl_hits = 0
-        ki      = await self._next()
+        ki      = self._next()          # sync call — no await needed
         max_att = LLM_MAX_RETRIES * len(self._keys)
 
         for attempt in range(max_att):
@@ -216,7 +230,7 @@ class LLMPool:
                     print(f"[LLM Pool] ❌ Error key[{ki}] attempt {attempt + 1}/{max_att}: {exc}")
 
                 retries += 1
-                ki = await self._next()
+                ki = self._next()       # sync call — no await needed
                 if not is_rl:  # 429 → rotate instantly; other errors → brief backoff
                     await asyncio.sleep(min(LLM_RETRY_DELAY_SEC * (attempt + 1), 2.0))
 

@@ -1080,6 +1080,9 @@ async def vobiz_stream(websocket: WebSocket):
                     agent1_context=agent1_context,
                     client_id=client_id,
                 )
+                # Explicitly stamp session_key so the n8n payload always
+                # carries the same session_id that is stored in call_logs.
+                pending_payload["session_id"] = session_key
 
             # ── Agent-3: cancel or reschedule ─────────────────────────────
             if (
@@ -1114,7 +1117,10 @@ async def vobiz_stream(websocket: WebSocket):
                     agent1_context=agent1_context,
                     client_id=client_id,
                 )
-                print(f"[Agent-3] Queued {_evt} payload for n8n")
+                # Explicitly stamp session_key so the n8n payload always
+                # carries the same session_id that is stored in call_logs.
+                pending_payload["session_id"] = session_key
+                print(f"[Agent-3] Queued {_evt} payload for n8n (session={session_key})")
 
             # Guard: detect non-Kannada Indic script in Kannada responses
             if effective_lang == "kn" and response_text.strip():
@@ -1425,6 +1431,9 @@ async def vobiz_stream(websocket: WebSocket):
                     agent1_context=agent1_context,
                     client_id=client_id,
                 )
+                # Explicitly stamp session_key so the n8n payload always
+                # carries the same session_id that is stored in call_logs.
+                pending_payload["session_id"] = session_key
                 print(f"[N8N Fail-Safe] Built partial fallback payload for session={session_key}")
             except Exception as _fe:
                 print(f"[N8N Fail-Safe] Could not build fallback payload: {_fe}")
