@@ -153,7 +153,7 @@ class LLMPool:
         self._rr_index = 0                  # next key to use (mod num_keys)
         self.chat     = _Chat(self)
         print(
-            f"[LLM Pool] ✅ {len(self._keys)} key(s) loaded | "
+            f"[LLM Pool] [OK] {len(self._keys)} key(s) loaded | "
             f"{LLM_MAX_CONCURRENT_PER_KEY} concurrent/key | "
             f"max retries={LLM_MAX_RETRIES} | default model={LLM_MODEL}"
         )
@@ -225,9 +225,9 @@ class LLMPool:
 
                 if is_rl:
                     rl_hits += 1
-                    print(f"[LLM Pool] ⚡ 429 rate-limit on key[{ki}] — rotating to next key")
+                    print(f"[LLM Pool] [429] rate-limit on key[{ki}] -- rotating to next key")
                 else:
-                    print(f"[LLM Pool] ❌ Error key[{ki}] attempt {attempt + 1}/{max_att}: {exc}")
+                    print(f"[LLM Pool] [ERR] Error key[{ki}] attempt {attempt + 1}/{max_att}: {exc}")
 
                 retries += 1
                 ki = self._next()       # sync call — no await needed
