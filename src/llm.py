@@ -1,8 +1,8 @@
 """
 llm.py — LLM Pool Manager
 
-Drop-in replacement for groq.AsyncGroq with:
-  - Round-robin across GROQ_API_KEYS (comma-separated in .env)
+Drop-in replacement for openai.AsyncOpenAI (via OpenRouter) with:
+  - Round-robin across OPENROUTER_API_KEYS (comma-separated in .env)
   - Per-key asyncio.Semaphore concurrency cap
   - Retry on 429 / rate-limit errors with automatic key rotation
   - Structured metrics: latency, token usage, cost (USD), per-key stats
@@ -12,7 +12,7 @@ Usage (drop-in for groq_client):
     from llm import llm_pool
     response = await llm_pool.chat.completions.create(model=..., messages=..., ...)
 
-Custom kwargs stripped before Groq call (for metrics only):
+Custom kwargs stripped before OpenRouter call (for metrics only):
     _agent_name  (str) — e.g. "agent1", "agent2_kn"
     _client_id   (str) — tenant / caller identifier
 """
@@ -23,7 +23,7 @@ import asyncio
 import threading
 from typing import Any
 
-from groq import AsyncGroq
+from openai import AsyncOpenAI
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -32,21 +32,25 @@ load_dotenv()
 # -----------------------------------------------------------------------
 # Configuration — all overridable via .env
 # -----------------------------------------------------------------------
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+
 def _load_keys() -> list:
-    raw = os.getenv("GROQ_API_KEYS", "").strip()
+    raw = os.getenv("OPENROUTER_API_KEYS", "").strip()
     if raw:
         keys = [k.strip() for k in raw.split(",") if k.strip()]
         if keys:
             return keys
-    single = os.getenv("GROQ_API_KEY", "").strip()
+    single = os.getenv("OPENROUTER_API_KEY", "").strip()
     if single:
         return [single]
     raise ValueError(
-        "No Groq API keys found. Set GROQ_API_KEYS (comma-separated) or GROQ_API_KEY in .env"
+        "No OpenRouter API keys found. Set OPENROUTER_API_KEYS (comma-separated) "
+        "or OPENROUTER_API_KEY in .env"
     )
 
 
-LLM_MODEL                  = os.getenv("LLM_MODEL",                    "llama-3.3-70b-versatile")
+LLM_MODEL                  = os.getenv("LLM_MODEL",                    "meta-llama/llama-3.3-70b-instruct")
 LLM_MAX_CONCURRENT_PER_KEY = int(os.getenv("LLM_MAX_CONCURRENT_PER_KEY", "5"))
 LLM_MAX_RETRIES            = int(os.getenv("LLM_MAX_RETRIES",            "2"))
 LLM_RETRY_DELAY_SEC        = float(os.getenv("LLM_RETRY_DELAY_SEC",      "0.3"))
@@ -134,15 +138,19 @@ class _Chat:
 # -----------------------------------------------------------------------
 class LLMPool:
     """
-    Round-robin AsyncGroq pool with per-key semaphore and retry-on-429.
+    Round-robin OpenRouter pool with per-key semaphore and retry-on-429.
 
-    Identical interface to groq.AsyncGroq — pass anywhere groq_client is expected:
+    Uses openai.AsyncOpenAI pointed at OpenRouter's base URL — identical
+    interface to the old groq.AsyncGroq; pass anywhere groq_client is expected:
         await llm_pool.chat.completions.create(model=..., messages=..., ...)
     """
 
     def __init__(self):
         self._keys    = _load_keys()
-        self._clients = [AsyncGroq(api_key=k) for k in self._keys]
+        self._clients = [
+            AsyncOpenAI(api_key=k, base_url=OPENROUTER_BASE_URL)
+            for k in self._keys
+        ]
         self._sems    = [asyncio.Semaphore(LLM_MAX_CONCURRENT_PER_KEY) for _ in self._keys]
         # ── Global round-robin counter ──────────────────────────────────────
         # Use threading.Lock (NOT asyncio.Lock) so this is safe to call from
