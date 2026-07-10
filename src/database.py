@@ -295,22 +295,9 @@ _SCHEMA_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_appt_client_id        ON appointments(client_id)",
     "CREATE INDEX IF NOT EXISTS idx_agent_appt_client_id  ON agent_appointments(client_id)",
     "CREATE INDEX IF NOT EXISTS idx_reschedules_client_id ON reschedules(client_id)",
-    # Drop all manually-added client_id FK constraints — none were defined in
-    # code; all cause FK violations on any client_id config mismatch.
-    # client_id is treated as a soft TEXT label throughout this codebase.
-    "ALTER TABLE llm_events          DROP CONSTRAINT IF EXISTS fk_llm_events_client",
-    "ALTER TABLE stt_events          DROP CONSTRAINT IF EXISTS fk_stt_events_client",
-    "ALTER TABLE tts_events          DROP CONSTRAINT IF EXISTS fk_tts_events_client",
-    "ALTER TABLE call_logs           DROP CONSTRAINT IF EXISTS fk_call_logs_client",
-    "ALTER TABLE audit_log           DROP CONSTRAINT IF EXISTS fk_audit_log_client",
-    "ALTER TABLE cancellations       DROP CONSTRAINT IF EXISTS fk_cancellations_client",
-    "ALTER TABLE agent_appointments  DROP CONSTRAINT IF EXISTS fk_agent_appointments_client",
-    "ALTER TABLE appointments        DROP CONSTRAINT IF EXISTS fk_appointments_client",
-    "ALTER TABLE sessions            DROP CONSTRAINT IF EXISTS fk_sessions_client",
-    "ALTER TABLE reschedules         DROP CONSTRAINT IF EXISTS fk_reschedules_client",
-    "ALTER TABLE app_users           DROP CONSTRAINT IF EXISTS fk_app_users_client",
-    "ALTER TABLE calendar_connections DROP CONSTRAINT IF EXISTS fk_calendar_client",
     # Tables created externally (dashboard/calendar integration) — ensure they exist
+    # IMPORTANT: these must come BEFORE any ALTER TABLE that references them so that
+    # a fresh database never hits UndefinedTable on the DROP CONSTRAINT lines below.
     """
     CREATE TABLE IF NOT EXISTS app_users (
         firebase_uid  TEXT PRIMARY KEY,
@@ -344,6 +331,22 @@ _SCHEMA_STATEMENTS = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_calendar_connections_client ON calendar_connections(client_id)",
+    # Drop all manually-added client_id FK constraints — none were defined in
+    # code; all cause FK violations on any client_id config mismatch.
+    # client_id is treated as a soft TEXT label throughout this codebase.
+    # These run AFTER all tables are created so they are safe on a fresh DB.
+    "ALTER TABLE llm_events          DROP CONSTRAINT IF EXISTS fk_llm_events_client",
+    "ALTER TABLE stt_events          DROP CONSTRAINT IF EXISTS fk_stt_events_client",
+    "ALTER TABLE tts_events          DROP CONSTRAINT IF EXISTS fk_tts_events_client",
+    "ALTER TABLE call_logs           DROP CONSTRAINT IF EXISTS fk_call_logs_client",
+    "ALTER TABLE audit_log           DROP CONSTRAINT IF EXISTS fk_audit_log_client",
+    "ALTER TABLE cancellations       DROP CONSTRAINT IF EXISTS fk_cancellations_client",
+    "ALTER TABLE agent_appointments  DROP CONSTRAINT IF EXISTS fk_agent_appointments_client",
+    "ALTER TABLE appointments        DROP CONSTRAINT IF EXISTS fk_appointments_client",
+    "ALTER TABLE sessions            DROP CONSTRAINT IF EXISTS fk_sessions_client",
+    "ALTER TABLE reschedules         DROP CONSTRAINT IF EXISTS fk_reschedules_client",
+    "ALTER TABLE app_users           DROP CONSTRAINT IF EXISTS fk_app_users_client",
+    "ALTER TABLE calendar_connections DROP CONSTRAINT IF EXISTS fk_calendar_client",
 ]
 
 
