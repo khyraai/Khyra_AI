@@ -203,7 +203,7 @@ def build_scheduling_payload(
     resolved_client_id = client_id or state.get("client_id", "")
 
     payload = {
-        "id": str(uuid.uuid4()),
+        "id": f"vai-{uuid.uuid4()}",
         "event_type": event_type,
         "session_id": state.get("call_sid", ""),
         "client_id": resolved_client_id,
