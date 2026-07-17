@@ -161,7 +161,7 @@ treatment:
 RESPONSE RULE:
 
 - ONLY greeting and emergency should have response:
-  - Greeting: "ನಮಸ್ಕಾರ, Doctor Deepti's Dental and Orthodontic Centre ಗೆ ಸ್ವಾಗತ. ನಾನು ದಿವ್ಯ. ಏನು ಸಹಾಯ ಬೇಕಿತ್ತು?"
+  - Greeting: "ನಮಸ್ಕಾರ, ಏನು ಸಹಾಯ ಬೇಕಿತ್ತು?"
   - Emergency: "ಡಾಕ್ಟರ್ ಗೆ ಕನೆಕ್ಟ್ ಮಾಡ್ತೀವಿ ಒಂದು ನಿಮಿಷ."
 
 - All others:
