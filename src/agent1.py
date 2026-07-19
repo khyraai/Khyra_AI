@@ -1,4 +1,4 @@
-﻿"""
+"""
 agent1.py — Intent Router (Agent-1)
 
 Exports:
@@ -175,8 +175,8 @@ Detect the dominant language of the input and return it as the "language" field.
 
 Rules:
 1. If input contains ONLY greeting words (hi, hello, namaskara, etc.):
-   → language = "kn"
-   (Default to clinic language for pure greetings)
+   → language = "unknown"
+   (Let the system use the detected language)
 
 2. If input contains meaningful content:
    → Kannada script OR Kanglish words (beku, madbeku, eshtu, ide, etc.) → "kn"
@@ -186,7 +186,7 @@ Rules:
    → Choose the DOMINANT language.
 
 4. Default fallback (unclear / empty):
-   → "kn"
+   → "unknown"
 
 IMPORTANT:
 - NEVER ask the user for their language preference.

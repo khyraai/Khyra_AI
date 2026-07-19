@@ -43,6 +43,28 @@ from tts import cartesia_tts_collect, cartesia_tts_chunked, cartesia_tts_stream
 from database import check_availability, get_next_available_slot, verify_appointment_for_cancellation, update_appointment_status, reschedule_appointment, log_call_start, log_call_end, log_llm_event, save_agent_appointment, mark_n8n_triggered
 from client_config import get_config_by_did, get_default_config
 
+def get_client_default_language(client_cfg: dict, fallback: str = "en") -> str:
+    lang = fallback
+    supp = client_cfg.get("supported_languages")
+    if supp:
+        try:
+            if isinstance(supp, str):
+                supp = json.loads(supp)
+            if isinstance(supp, dict):
+                default_val = supp.get("default", "").strip().lower()
+                if default_val == "kannada":
+                    lang = "kn"
+                elif default_val == "english":
+                    lang = "en"
+                elif default_val in ("en", "kn"):
+                    lang = default_val
+        except Exception as e:
+            print(f"[LanguageHelper] Error parsing supported_languages: {e}")
+            pass
+    else:
+        lang = client_cfg.get("default_language", fallback)
+    return lang
+
 # -----------------------------
 # Create FastAPI App
 # -----------------------------
@@ -871,7 +893,7 @@ async def vobiz_stream(websocket: WebSocket):
 
             t0 = time.time()
             _stt_lang = session_language if session_language else (
-                "kn-IN" if client_cfg.get("default_language", "kn") == "kn" else "en-IN"
+                "kn-IN" if get_client_default_language(client_cfg, "en") == "kn" else "en-IN"
             )
             print(f"[PIPE] 🎙️  STT start  hint='{_stt_lang}'  wav={len(wav_bytes)}B")
             user_text, detected_lang = await run_stt_http(
@@ -1227,7 +1249,7 @@ async def vobiz_stream(websocket: WebSocket):
     if not greeted and call_active:
         greeted = True
         try:
-            welcome_lang = client_cfg.get("default_language", "en")
+            welcome_lang = get_client_default_language(client_cfg, "en")
             clinic_name  = client_cfg.get("clinic_name", "our clinic")
             if welcome_lang == "kn":
                 welcome_text = f"\u0ca8\u0cae\u0cb8\u0ccd\u0c95\u0cbe\u0cb0, {clinic_name} \u0c97\u0cc6 \u0cb8\u0ccd\u0cb5\u0cbe\u0c97\u0ca4. \u0ca8\u0cbe\u0ca8\u0cc1 \u0ca8\u0cbf\u0cae\u0c97\u0cc6 \u0cb9\u0cc7\u0c97\u0cc6 \u0cb8\u0cb9\u0cbe\u0caf \u0cae\u0cbe\u0ca1\u0cb2\u0cbf?"
@@ -1321,7 +1343,7 @@ async def vobiz_stream(websocket: WebSocket):
                     await asyncio.to_thread(
                         log_call_start, session_key, client_id,
                         did_number=did_number, caller_phone=caller_phone,
-                        language=client_cfg.get("default_language", "en"),
+                        language=get_client_default_language(client_cfg, "en"),
                     )
                 except Exception as _lce:
                     print(f"[Vobiz] log_call_start error: {_lce}")
@@ -1329,7 +1351,7 @@ async def vobiz_stream(websocket: WebSocket):
                 if not greeted and call_active:
                     greeted = True
                     try:
-                        welcome_lang  = client_cfg.get("default_language", "en")
+                        welcome_lang  = get_client_default_language(client_cfg, "en")
                         clinic_name   = client_cfg.get("clinic_name", "our clinic")
                         if welcome_lang == "kn":
                             welcome_text = f"ನಮಸ್ಕಾರ, {clinic_name} ಗೆ ಸ್ವಾಗತ. ನಾನು ನಿಮಗೆ ಹೇಗೆ ಸಹಾಯ ಮಾಡಲಿ?"
