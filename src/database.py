@@ -6,7 +6,7 @@ Connection pooling is handled by pg.py (ThreadedConnectionPool).
 
 Tables
 ------
-clients           — Registry of clinic/doctor config; seeded from client_config.json
+clients           — Registry of clinic/doctor config; managed directly in DB
 sessions          — Conversation state + memory per call
 appointments      — PRIMARY booking table (N8N-managed, doctor-facing)
 agent_appointments— SECONDARY fallback (voice-agent-written at booking time)
@@ -50,7 +50,30 @@ import pytz
 from pg import get_conn
 
 _IST = pytz.timezone("Asia/Kolkata")
-MAX_BOOKINGS_PER_SLOT = int(os.getenv("MAX_BOOKINGS_PER_SLOT", "1"))
+
+def get_client_max_slots(client_id: str = None, did_number: str = None) -> int:
+    """Fetch max_slots_per_30_minutes from DB, using did_number if available, else client_id."""
+    try:
+        from pg import get_conn
+        with get_conn() as cur:
+            if did_number:
+                cur.execute("SELECT max_slots_per_30_minutes FROM clients WHERE did_number = %s LIMIT 1", (did_number,))
+                row = cur.fetchone()
+                if row and row["max_slots_per_30_minutes"] is not None:
+                    return int(row["max_slots_per_30_minutes"])
+                norm = did_number if did_number.startswith("+") else "+" + did_number
+                cur.execute("SELECT max_slots_per_30_minutes FROM clients WHERE did_number = %s LIMIT 1", (norm,))
+                row = cur.fetchone()
+                if row and row["max_slots_per_30_minutes"] is not None:
+                    return int(row["max_slots_per_30_minutes"])
+            if client_id:
+                cur.execute("SELECT max_slots_per_30_minutes FROM clients WHERE client_id = %s LIMIT 1", (client_id,))
+                row = cur.fetchone()
+                if row and row["max_slots_per_30_minutes"] is not None:
+                    return int(row["max_slots_per_30_minutes"])
+    except Exception as e:
+        print(f"⚠️ [DB] get_client_max_slots error: {e}")
+    return 4
 
 _KANNADA_DIGITS = str.maketrans("೦೧೨೩೪೫೬೭೮೯", "0123456789")
 _KANNADA_TIME_HINTS = {
@@ -80,7 +103,17 @@ _SCHEMA_STATEMENTS = [
         connection_id           TEXT,
         created_at              TEXT DEFAULT (NOW()::TEXT),
         updated_at              TEXT DEFAULT (NOW()::TEXT),
-        config_version          INTEGER
+        config_version          INTEGER,
+        closed_days             JSONB,
+        services                JSONB,
+        clinic_type             TEXT,
+        google_maps_url         TEXT,
+        clinic_email            TEXT,
+        clinic_phone            TEXT,
+        domain                  VARCHAR(100),
+        supported_languages     JSONB,
+        session_time            JSONB,
+        max_slots_per_30_minutes INTEGER DEFAULT 4
     )
     """,
     """
@@ -331,6 +364,33 @@ _SCHEMA_STATEMENTS = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_calendar_connections_client ON calendar_connections(client_id)",
+    # ---------------------------------------------------------------------------
+    # Availability table — blocks dates/time-ranges from being booked
+    # Created by the dashboard; we just ensure it exists here.
+    # ---------------------------------------------------------------------------
+    """
+    CREATE TABLE IF NOT EXISTS availability (
+        id               character varying(255) PRIMARY KEY,
+        client_id        character varying(255),
+        doctor_id        character varying(255),
+        appointment_id   character varying(255),
+        google_event_id  text,
+        start_time       timestamptz NOT NULL,
+        end_time         timestamptz NOT NULL,
+        is_all_day       boolean DEFAULT false,
+        event_type       character varying(50),
+        reason           character varying(255),
+        description      text,
+        created_source   character varying(50),
+        status           character varying(50) DEFAULT 'active',
+        last_synced_at   timestamptz,
+        created_at       timestamptz DEFAULT CURRENT_TIMESTAMP,
+        updated_at       timestamptz DEFAULT CURRENT_TIMESTAMP
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_availability_client_id  ON availability(client_id)",
+    "CREATE INDEX IF NOT EXISTS idx_availability_start_time ON availability(start_time)",
+    "CREATE INDEX IF NOT EXISTS idx_availability_status     ON availability(status)",
     # Drop all manually-added client_id FK constraints — none were defined in
     # code; all cause FK violations on any client_id config mismatch.
     # client_id is treated as a soft TEXT label throughout this codebase.
@@ -351,20 +411,11 @@ _SCHEMA_STATEMENTS = [
 
 
 def init_db():
-    """Create all tables (idempotent) and upsert clients from config."""
+    """Create all tables (idempotent)."""
     with get_conn() as cur:
         for stmt in _SCHEMA_STATEMENTS:
             cur.execute(stmt)
-
-    try:
-        from client_config import load_client_configs
-        configs = load_client_configs()
-        for cfg in configs.values():
-            upsert_client(cfg)
-    except Exception as e:
-        print(f"[DB] Could not upsert clients from config: {e}")
-
-    print("[DB] PostgreSQL schema initialised (11 tables)")
+    print("[DB] PostgreSQL schema initialised")
 
 
 # ---------------------------------------------------------------------------
@@ -1156,86 +1207,153 @@ def reschedule_appointment(appointment_id: str, new_date: str, new_time: str) ->
         return False
 
 
-def _is_slot_booked(target_date: str, target_time: str, client_id: str = None) -> bool:
-    """Internal helper — checks PRIMARY; falls back to SECONDARY on DB error."""
-    iso_timestamp = _parse_to_ist_iso(target_date, target_time)
-    if iso_timestamp is None:
-        return False
+def _slot_dt_to_utc(slot_dt) -> datetime:
+    """
+    Ensure a datetime is UTC-aware. Accepts:
+      - timezone-aware datetime (any tz)  → convert to UTC
+      - naive datetime                    → assume IST, convert to UTC
+    """
+    _UTC = pytz.utc
+    if slot_dt.tzinfo is None:
+        slot_dt = _IST.localize(slot_dt)
+    return slot_dt.astimezone(_UTC)
 
+
+def _fetch_availability_blocks(client_id: str, date_utc_start: datetime, date_utc_end: datetime) -> list:
+    """
+    Fetch active availability blocks for a client that overlap [date_utc_start, date_utc_end).
+    Returns list of dicts with keys: start_time, end_time, is_all_day.
+    Timestamps from DB may be timezone-aware (UTC); we normalise them here.
+    """
+    _UTC = pytz.utc
     try:
         with get_conn() as cur:
             if client_id:
                 cur.execute("""
-                    SELECT COUNT(*) AS cnt FROM appointments
-                    WHERE start_time = %s AND status NOT IN ('cancelled', 'rescheduled')
+                    SELECT start_time, end_time, is_all_day
+                    FROM availability
+                    WHERE status = 'active'
                     AND client_id = %s
-                """, (iso_timestamp, client_id))
+                    AND start_time < %s
+                    AND end_time > %s
+                """, (client_id, date_utc_end, date_utc_start))
             else:
                 cur.execute("""
-                    SELECT COUNT(*) AS cnt FROM appointments
-                    WHERE start_time = %s AND status NOT IN ('cancelled', 'rescheduled')
-                """, (iso_timestamp,))
-            cnt = cur.fetchone()["cnt"]
-        return cnt >= MAX_BOOKINGS_PER_SLOT
-    except Exception as e:
-        print(f"⚠️ [DB] Primary _is_slot_booked error: {e}. Trying secondary...")
+                    SELECT start_time, end_time, is_all_day
+                    FROM availability
+                    WHERE status = 'active'
+                    AND start_time < %s
+                    AND end_time > %s
+                """, (date_utc_end, date_utc_start))
+            rows = cur.fetchall()
 
+        blocks = []
+        for row in rows:
+            st = row["start_time"]
+            et = row["end_time"]
+            # Normalise to UTC-aware datetime
+            if isinstance(st, datetime):
+                if st.tzinfo is None:
+                    st = _UTC.localize(st)
+                else:
+                    st = st.astimezone(_UTC)
+            if isinstance(et, datetime):
+                if et.tzinfo is None:
+                    et = _UTC.localize(et)
+                else:
+                    et = et.astimezone(_UTC)
+            blocks.append({"start_time": st, "end_time": et, "is_all_day": bool(row["is_all_day"])})
+        return blocks
+    except Exception as e:
+        print(f"⚠️ [DB] _fetch_availability_blocks error: {e}")
+        return []
+
+
+def _is_slot_blocked_by_availability(slot_utc: datetime, blocks: list) -> bool:
+    """
+    Given a UTC-aware slot datetime and a list of availability blocks,
+    return True if the slot falls within any block (meaning it's UNAVAILABLE).
+
+    Block semantics:
+      - is_all_day = True  → entire calendar day of block.start_time (IST date) is blocked
+      - is_all_day = False → slot is blocked if start_time <= slot < end_time
+    """
+    slot_ist = slot_utc.astimezone(_IST)
+    for block in blocks:
+        if block["is_all_day"]:
+            # Block the entire IST calendar date of the block's start
+            block_date_ist = block["start_time"].astimezone(_IST).date()
+            if slot_ist.date() == block_date_ist:
+                return True
+        else:
+            # Strictly: start_time <= slot < end_time
+            if block["start_time"] <= slot_utc < block["end_time"]:
+                return True
+    return False
+
+
+def _is_slot_booked(target_date: str, target_time: str, client_id: str = None) -> bool:
+    """
+    Internal helper — checks the availability table.
+    Returns True if the slot is blocked (unavailable), False if it's free.
+    """
+    iso_timestamp = _parse_to_ist_iso(target_date, target_time)
+    if iso_timestamp is None:
+        return False
+
+    _UTC = pytz.utc
     try:
-        rows = get_agent_appointments(iso_timestamp, client_id)
-        return len(rows) >= MAX_BOOKINGS_PER_SLOT
-    except Exception:
+        # Build UTC-aware datetime for the slot
+        slot_dt = datetime.fromisoformat(iso_timestamp)
+        slot_utc = _slot_dt_to_utc(slot_dt)
+
+        # Fetch blocks that overlap the target day (±1 day window to be safe with UTC offsets)
+        day_start_utc = slot_utc.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(hours=6)
+        day_end_utc   = day_start_utc + timedelta(hours=36)
+        blocks = _fetch_availability_blocks(client_id, day_start_utc, day_end_utc)
+
+        return _is_slot_blocked_by_availability(slot_utc, blocks)
+    except Exception as e:
+        print(f"⚠️ [DB] _is_slot_booked error: {e}")
         return False
 
 
 def _get_fully_booked_slots(iso_timestamps: list, client_id: str = None) -> set:
     """
-    Single batch query returning which of the given ISO start_times are fully booked.
-    Replaces N individual _is_slot_booked calls with one round-trip.
-    Falls back to agent_appointments on primary error.
+    Batch query — returns which of the given ISO start_times are blocked
+    according to the availability table.
     """
     if not iso_timestamps:
         return set()
+
+    _UTC = pytz.utc
     try:
-        with get_conn() as cur:
-            if client_id:
-                cur.execute("""
-                    SELECT start_time FROM appointments
-                    WHERE start_time = ANY(%s)
-                    AND status NOT IN ('cancelled', 'rescheduled')
-                    AND client_id = %s
-                    GROUP BY start_time HAVING COUNT(*) >= %s
-                """, (iso_timestamps, client_id, MAX_BOOKINGS_PER_SLOT))
-            else:
-                cur.execute("""
-                    SELECT start_time FROM appointments
-                    WHERE start_time = ANY(%s)
-                    AND status NOT IN ('cancelled', 'rescheduled')
-                    GROUP BY start_time HAVING COUNT(*) >= %s
-                """, (iso_timestamps, MAX_BOOKINGS_PER_SLOT))
-            rows = cur.fetchall()
-        return {r["start_time"].isoformat() if isinstance(r["start_time"], datetime) else r["start_time"] for r in rows}
+        # Parse all slot datetimes to UTC
+        slot_utcs = []
+        for ts in iso_timestamps:
+            try:
+                dt = datetime.fromisoformat(ts)
+                slot_utcs.append((ts, _slot_dt_to_utc(dt)))
+            except Exception:
+                pass
+
+        if not slot_utcs:
+            return set()
+
+        # Determine overall window for a single DB round-trip
+        all_utc = [s for _, s in slot_utcs]
+        window_start = min(all_utc) - timedelta(hours=6)
+        window_end   = max(all_utc) + timedelta(hours=6)
+
+        blocks = _fetch_availability_blocks(client_id, window_start, window_end)
+
+        blocked = set()
+        for original_ts, slot_utc in slot_utcs:
+            if _is_slot_blocked_by_availability(slot_utc, blocks):
+                blocked.add(original_ts)
+        return blocked
     except Exception as e:
-        print(f"⚠️ [DB] _get_fully_booked_slots primary error: {e}. Trying secondary...")
-    try:
-        with get_conn() as cur:
-            if client_id:
-                cur.execute("""
-                    SELECT start_time FROM agent_appointments
-                    WHERE start_time = ANY(%s)
-                    AND status NOT IN ('cancelled', 'rescheduled')
-                    AND client_id = %s
-                    GROUP BY start_time HAVING COUNT(*) >= %s
-                """, (iso_timestamps, client_id, MAX_BOOKINGS_PER_SLOT))
-            else:
-                cur.execute("""
-                    SELECT start_time FROM agent_appointments
-                    WHERE start_time = ANY(%s)
-                    AND status NOT IN ('cancelled', 'rescheduled')
-                    GROUP BY start_time HAVING COUNT(*) >= %s
-                """, (iso_timestamps, MAX_BOOKINGS_PER_SLOT))
-            rows = cur.fetchall()
-        return {r["start_time"].isoformat() if isinstance(r["start_time"], datetime) else r["start_time"] for r in rows}
-    except Exception:
+        print(f"⚠️ [DB] _get_fully_booked_slots error: {e}")
         return set()
 
 
@@ -1358,8 +1476,14 @@ def get_previous_available_slot(
 
 def check_availability(target_date: str, target_time: str, client_id: str = None) -> dict:
     """
-    Checks if a slot is available. Queries PRIMARY (appointments) table.
-    Falls back to SECONDARY (agent_appointments) only on DB error.
+    Checks if a slot is available by querying the availability table.
+
+    Logic:
+      1. Parse the requested date+time to a UTC-aware datetime.
+      2. Fetch all active availability blocks for the client covering that day.
+      3. If any block has is_all_day=True and the IST date matches → UNAVAILABLE.
+      4. If any block has start_time <= requested_utc < end_time → UNAVAILABLE.
+      5. If unavailable, find next (and previous same-day) free slot.
 
     Returns:
         Dict with: 'available', 'next_date', 'next_time', 'prev_date', 'prev_time'
@@ -1372,42 +1496,27 @@ def check_availability(target_date: str, target_time: str, client_id: str = None
         print(f"⚠️ [DB] Could not parse '{target_date} {target_time}' — defaulting to available")
         return result
 
-    print(f"🔍 [DB] check_availability: '{target_date} {target_time}' → {iso_timestamp} [client_id={client_id}]")
+    print(f"🔍 [DB] check_availability (availability table): '{target_date} {target_time}' → {iso_timestamp} [client_id={client_id}]")
 
-    primary_failed = False
     try:
-        with get_conn() as cur:
-            if client_id:
-                cur.execute("""
-                    SELECT COUNT(*) AS cnt FROM appointments
-                    WHERE start_time = %s AND status NOT IN ('cancelled', 'rescheduled')
-                    AND client_id = %s
-                """, (iso_timestamp, client_id))
-            else:
-                cur.execute("""
-                    SELECT COUNT(*) AS cnt FROM appointments
-                    WHERE start_time = %s AND status NOT IN ('cancelled', 'rescheduled')
-                """, (iso_timestamp,))
-            cnt = cur.fetchone()["cnt"]
-        if cnt >= MAX_BOOKINGS_PER_SLOT:
-            print(f"❌ [DB] PRIMARY: {target_date} {target_time} is FULL ({cnt}/{MAX_BOOKINGS_PER_SLOT})")
+        _UTC = pytz.utc
+        slot_dt = datetime.fromisoformat(iso_timestamp)
+        slot_utc = _slot_dt_to_utc(slot_dt)
+
+        # Fetch blocks covering a ±6-hour window around the slot to catch all UTC offsets
+        window_start = slot_utc.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(hours=6)
+        window_end   = window_start + timedelta(hours=36)
+        blocks = _fetch_availability_blocks(client_id, window_start, window_end)
+
+        if _is_slot_blocked_by_availability(slot_utc, blocks):
+            print(f"❌ [DB] AVAILABILITY: {target_date} {target_time} is BLOCKED (UTC={slot_utc.isoformat()})")
             result["available"] = False
         else:
-            print(f"✅ [DB] PRIMARY: {target_date} {target_time} is AVAILABLE ({cnt}/{MAX_BOOKINGS_PER_SLOT})")
-    except Exception as e:
-        print(f"⚠️ [DB] Primary check failed: {e}. Falling back to secondary...")
-        primary_failed = True
+            print(f"✅ [DB] AVAILABILITY: {target_date} {target_time} is FREE (UTC={slot_utc.isoformat()})")
 
-    if primary_failed:
-        try:
-            rows = get_agent_appointments(iso_timestamp, client_id)
-            if len(rows) >= MAX_BOOKINGS_PER_SLOT:
-                print(f"❌ [DB] SECONDARY: {target_date} {target_time} is FULL ({len(rows)}/{MAX_BOOKINGS_PER_SLOT} fallback)")
-                result["available"] = False
-            else:
-                print(f"✅ [DB] SECONDARY: {target_date} {target_time} is AVAILABLE ({len(rows)}/{MAX_BOOKINGS_PER_SLOT} fallback)")
-        except Exception as e:
-            print(f"⚠️ [DB] Secondary check also failed: {e}")
+    except Exception as e:
+        print(f"⚠️ [DB] check_availability error: {e} — defaulting to available")
+        return result
 
     if not result["available"]:
         next_date, next_time = get_next_available_slot(target_date, target_time, client_id=client_id)

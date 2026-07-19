@@ -6,5 +6,6 @@ aiohttp==3.13.5
 python-dotenv==1.2.2
 requests==2.32.5
 groq==1.1.0
+# openai>=1.35.0  # kept for reference — was used for OpenRouter (openai SDK)
 pytz==2025.2
 psycopg2-binary==2.9.12
