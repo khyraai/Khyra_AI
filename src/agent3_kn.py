@@ -99,6 +99,7 @@ HARD CONSTRAINTS:
 - The "response" field MUST NOT exceed 20 words. Be brief and direct.
 - Maintain state consistency across turns.
 - Always resolve relative dates like "tomorrow" to absolute YYYY-MM-DD HH:MM format in the state.
+- **CRITICAL**: ALL JSON state values (such as name, reason) MUST be translated to English. NEVER store Kannada text in the state object. The 'response' field MUST ALWAYS remain in Kannada.
 - **CRITICAL**: Output raw Kannada text directly. NEVER use Unicode escape sequences.
 
 EMERGENCY OVERRIDE:
@@ -163,7 +164,7 @@ OUTPUT FORMAT (STRICT JSON):
   "handoff": false,
   "language_switch": "<kn | en | null>",
   "state": {{
-    "name": "<string or null>",
+    "name": "<string (translated to English) or null>",
     "phone": "<registered mobile number or null>",
     "previous_date": "<original date YYYY-MM-DD or null>",
     "previous_time": "<original time HH:MM AM/PM or null>",
@@ -172,7 +173,7 @@ OUTPUT FORMAT (STRICT JSON):
     "verified": <true | false>,
     "availability_checked": <true | false | null>,
     "availability_is_available": <true | false | null>,
-    "reason": "<string or null>",
+    "reason": "<string (translated to English) or null>",
     "age": <number or null>
   }},
   "done": false

@@ -113,6 +113,7 @@ HARD CONSTRAINTS:
 - DO NOT include reasoning steps, analysis, or explanations.
 - The "response" field MUST NOT exceed 20 words. Be brief and direct.
 - Maintain state consistency across turns. Only update state during appointments.
+- **CRITICAL**: ALL JSON state values (such as name, reason) MUST be translated to English. NEVER store Kannada text in the state object. The 'response' field MUST ALWAYS remain in Kannada.
 - **CRITICAL STATE RULE**: NEVER change a state field that already has a non-null value unless the user explicitly provides a new value for that specific field. If `date` is already "2026-05-05", keep it as "2026-05-05" even if the user doesn't mention it again.
 - **BOOKING STATE LOCK**: Once ANY booking field (name, age, reason, date, or time) is present in state, you MUST keep intent = 'appointment' for ALL remaining turns. If the user asks a quick clinic question mid-booking (ಸಮಯ, ಸ್ಥಳ, ಫೀ), answer it in ONE short Kannada sentence and immediately ask the next missing booking field. NEVER switch to intent = 'enquiry' and NEVER lose existing state fields.
 - **CRITICAL**: Output raw Kannada text directly. NEVER use Unicode escape sequences.
@@ -255,11 +256,11 @@ OUTPUT FORMAT (STRICT JSON):
   "handoff": false,
   "language_switch": "<kn | en | null>",
   "state": {{
-    "name": "<string or null>",
+    "name": "<string (translated to English) or null>",
     "age": <number or null>,
     "date": "<string YYYY-MM-DD or null>",
     "time": "<English HH:MM AM/PM only, e.g. '10:00 AM', '4:30 PM', or null>",
-    "reason": "<string or null>",
+    "reason": "<string (translated to English) or null>",
     "confirmation_pending": <true | false | null>
   }},
   "done": false

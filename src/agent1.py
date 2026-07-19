@@ -175,7 +175,7 @@ Detect the dominant language of the input and return it as the "language" field.
 
 Rules:
 1. If input contains ONLY greeting words (hi, hello, namaskara, etc.):
-   → language = "unknown"
+   → language = "en"
    (Let the system use the detected language)
 
 2. If input contains meaningful content:
@@ -186,11 +186,11 @@ Rules:
    → Choose the DOMINANT language.
 
 4. Default fallback (unclear / empty):
-   → "unknown"
+   → "en"
 
 IMPORTANT:
 - NEVER ask the user for their language preference.
-- Greeting inputs MUST return "unknown".
+- Greeting inputs MUST return "en".
 
 --------------------------------------------------
 

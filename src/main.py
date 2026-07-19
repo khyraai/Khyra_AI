@@ -919,7 +919,7 @@ async def vobiz_stream(websocket: WebSocket):
             # Short-circuit to "please repeat" TTS — skips LLM to save latency
             if detected_lang == "unknown":
                 print(f"[PIPE] 🚨 HALLUCINATION detected  text='{user_text[:50]}'  stt_latency={stt_time*1000:.0f}ms  → short-circuit to repeat-TTS (no LLM)")
-                _repeat_lang = session_language if session_language else "kn"
+                _repeat_lang = session_language if session_language else "en"
                 _repeat_text = (
                     "\u0C95\u0CCD\u0CB7\u0CAE\u0CBF\u0CB8\u0CBF, \u0CAE\u0CA4\u0CCD\u0CA4\u0CC6 \u0CB9\u0CC7\u0CB3\u0CBF."
                     if _repeat_lang == "kn"
@@ -953,7 +953,7 @@ async def vobiz_stream(websocket: WebSocket):
                 effective_lang = session_language
                 print(f"[PIPE] 🔐 Lang LOCKED  session='{session_language}'  stt_detected='{detected_lang}'  → using '{effective_lang}'")
             else:
-                effective_lang = "en" if str(detected_lang).lower().startswith("en") else "kn"
+                effective_lang = "kn" if str(detected_lang).lower().startswith("kn") else "en"
                 session_language = effective_lang
                 print(f"[PIPE] 🔑 Lang SET (first turn)  stt='{detected_lang}'  → locked='{session_language}'")
 
@@ -982,7 +982,7 @@ async def vobiz_stream(websocket: WebSocket):
                 agent1_context = agent1_parsed.get("context", {})
                 print(f" [VOBIZ ROUTER] Intent: {intent} | Summary: {agent1_parsed.get('summary')}")
 
-                raw_lang = agent1_parsed.get("language", "kn")
+                raw_lang = agent1_parsed.get("language", "en")
                 if raw_lang in ("kn", "en"):
                     session_language = raw_lang
                     print(f"[Vobiz][LANG] Agent-1 override → {session_language}")
