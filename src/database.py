@@ -1383,12 +1383,17 @@ def get_next_available_slot(
 
         current_dt = _IST.localize(naive_dt)
 
-        # Collect all candidate slots across 14 days first
+        # Collect all candidate slots across 2 working days
         all_slots = []
-        for day_offset in range(14):
+        valid_days = 0
+        day_offset = 0
+        
+        while valid_days < 2 and day_offset < 14:
             check_dt = current_dt + timedelta(days=day_offset)
             if check_dt.weekday() == 6:
+                day_offset += 1
                 continue
+                
             for hour in range(clinic_hours["morning_start"], clinic_hours["morning_end"]):
                 for minute in [0, 30]:
                     slot_dt = check_dt.replace(hour=hour, minute=minute, second=0, microsecond=0)
@@ -1401,6 +1406,9 @@ def get_next_available_slot(
                     if day_offset == 0 and slot_dt <= current_dt:
                         continue
                     all_slots.append(slot_dt)
+                    
+            valid_days += 1
+            day_offset += 1
 
         if not all_slots:
             return (None, None)

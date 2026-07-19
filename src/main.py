@@ -156,7 +156,11 @@ async def run_agent2(user_text: str, memory: list, state: dict, agent1_context: 
             if suggestions:
                 status_msg = "System: That slot is BOOKED. Suggest ONLY these alternatives (1 morning, 1 evening) — " + "; ".join(suggestions) + ". Do NOT list any other slots."
             else:
-                status_msg = "System: That slot is BOOKED. No alternative slots available in the next 14 days."
+                status_msg = "System: That slot is BOOKED. No alternative slots available in the next 2 working days."
+            
+            # CLEAR state so the LLM doesn't still think this date/time is confirmed!
+            state.pop("date", None)
+            state.pop("time", None)
         
         memory_with_check = memory + [
             {"role": "user", "content": user_text},
@@ -229,7 +233,11 @@ async def run_agent2_en(user_text: str, memory: list, state: dict, agent1_contex
             if suggestions:
                 status_msg = "System: That slot is BOOKED. Suggest ONLY these alternatives (1 morning, 1 evening) — " + "; ".join(suggestions) + ". Do NOT list any other slots."
             else:
-                status_msg = "System: That slot is BOOKED. No alternative slots available in the next 14 days."
+                status_msg = "System: That slot is BOOKED. No alternative slots available in the next 2 working days."
+            
+            # CLEAR state so the LLM doesn't still think this date/time is confirmed!
+            state.pop("date", None)
+            state.pop("time", None)
         
         memory_with_check = memory + [
             {"role": "user", "content": user_text},
@@ -1055,8 +1063,8 @@ async def vobiz_stream(websocket: WebSocket):
             memory.append({"role": "assistant", "content": response_text})
             transcript_log.append({"speaker": "user", "text": user_text})
             transcript_log.append({"speaker": "bot",  "text": response_text})
-            if len(memory) > 24:
-                memory = memory[-24:]
+            if len(memory) > 18:
+                memory = memory[-18:]
 
             # ── Agent-2: new appointment ──────────────────────────────────
             if (
