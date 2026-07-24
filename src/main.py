@@ -8,7 +8,8 @@ import audioop
 from datetime import datetime
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, HTMLResponse
+from typing import List
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 load_dotenv()
@@ -92,6 +93,7 @@ session_store = SessionStore()
 
 # callUUID → DID mapping (populated by /answer, consumed by start event)
 _call_did_map: dict[str, str] = {}
+stt_ui_connections: List[WebSocket] = []
 
 
 @app.post("/session/clear")
@@ -651,6 +653,473 @@ def _split_first_sentence(text: str) -> tuple[str, str]:
 
 
 # =======================================================================
+# STT TESTING ENDPOINTS
+# =======================================================================
+
+@app.get("/stt-ui")
+async def stt_ui():
+    html_content = """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Khyra STT Tester</title>
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+        <style>
+            body {
+                margin: 0;
+                padding: 0;
+                background-color: #0F172A;
+                color: #F8FAFC;
+                font-family: 'Inter', sans-serif;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                min-height: 100vh;
+            }
+            .container {
+                width: 90%;
+                max-width: 800px;
+                background: rgba(255, 255, 255, 0.05);
+                backdrop-filter: blur(12px);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                border-radius: 16px;
+                padding: 2rem;
+                box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+                display: flex;
+                flex-direction: column;
+                height: 80vh;
+            }
+            h1 {
+                margin-top: 0;
+                font-size: 1.5rem;
+                font-weight: 600;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+                padding-bottom: 1rem;
+            }
+            #transcription {
+                flex-grow: 1;
+                overflow-y: auto;
+                display: flex;
+                flex-direction: column;
+                gap: 1rem;
+                padding-right: 1rem;
+            }
+            #transcription::-webkit-scrollbar {
+                width: 8px;
+            }
+            #transcription::-webkit-scrollbar-thumb {
+                background: rgba(255,255,255,0.2);
+                border-radius: 4px;
+            }
+            .chunk {
+                background: rgba(56, 189, 248, 0.1);
+                border-left: 4px solid #38BDF8;
+                padding: 1rem;
+                border-radius: 4px 8px 8px 4px;
+                animation: fadeInUp 0.4s ease-out forwards;
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            .chunk-meta {
+                font-size: 0.75rem;
+                color: #94A3B8;
+                margin-bottom: 0.25rem;
+            }
+            .chunk-text {
+                font-size: 1rem;
+                line-height: 1.5;
+            }
+            @keyframes fadeInUp {
+                to {
+                    opacity: 1;
+                    transform: translateY(0);
+                }
+            }
+            .status {
+                display: flex;
+                align-items: center;
+                gap: 0.5rem;
+                font-size: 0.875rem;
+                color: #10B981;
+                margin-top: 1rem;
+            }
+            .status-dot {
+                width: 8px;
+                height: 8px;
+                background-color: #10B981;
+                border-radius: 50%;
+                box-shadow: 0 0 8px #10B981;
+                animation: pulse 2s infinite;
+            }
+            @keyframes pulse {
+                0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4); }
+                70% { box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
+                100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Live STT Transcription</h1>
+            <div id="transcription"></div>
+            <div class="status">
+                <div class="status-dot" id="status-dot"></div>
+                <span id="status-text">Connecting...</span>
+            </div>
+        </div>
+
+        <script>
+            const transcriptionDiv = document.getElementById('transcription');
+            const statusDot = document.getElementById('status-dot');
+            const statusText = document.getElementById('status-text');
+
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/stt-ui-stream`;
+            let ws;
+
+            function connect() {
+                ws = new WebSocket(wsUrl);
+
+                ws.onopen = () => {
+                    statusText.textContent = 'Listening to Call';
+                    statusText.style.color = '#10B981';
+                    statusDot.style.backgroundColor = '#10B981';
+                };
+
+                ws.onmessage = (event) => {
+                    const data = JSON.parse(event.data);
+                    
+                    const chunkEl = document.createElement('div');
+                    chunkEl.className = 'chunk';
+                    
+                    const metaEl = document.createElement('div');
+                    metaEl.className = 'chunk-meta';
+                    const timeStr = new Date(data.time * 1000).toLocaleTimeString();
+                    metaEl.textContent = `[${data.lang}] • ${timeStr}`;
+                    
+                    const textEl = document.createElement('div');
+                    textEl.className = 'chunk-text';
+                    textEl.textContent = data.text;
+                    
+                    chunkEl.appendChild(metaEl);
+                    chunkEl.appendChild(textEl);
+                    transcriptionDiv.appendChild(chunkEl);
+                    
+                    transcriptionDiv.scrollTop = transcriptionDiv.scrollHeight;
+                };
+
+                ws.onclose = () => {
+                    statusText.textContent = 'Disconnected. Reconnecting...';
+                    statusText.style.color = '#EF4444';
+                    statusDot.style.backgroundColor = '#EF4444';
+                    setTimeout(connect, 2000);
+                };
+            }
+
+            connect();
+        </script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
+
+
+@app.websocket("/stt-ui-stream")
+async def stt_ui_stream(websocket: WebSocket):
+    await websocket.accept()
+    stt_ui_connections.append(websocket)
+    try:
+        while True:
+            await websocket.receive_text() # Keep alive
+    except WebSocketDisconnect:
+        stt_ui_connections.remove(websocket)
+
+
+@app.post("/stt")
+async def stt_test_answer(request: Request):
+    """
+    Vobiz STT Test URL.
+    Configure your Vobiz number's Answer URL to:
+        https://<your-ngrok-domain>/stt
+    """
+    body = await request.body()
+    body_str = body.decode()
+    print(f"[Vobiz STT Test] /stt — {body_str[:200]}")
+
+    import urllib.parse
+    parsed_body = urllib.parse.parse_qs(body_str)
+    caller_phone = parsed_body.get("From", [""])[0]
+    did_number   = parsed_body.get("To", [""])[0]
+    call_uuid    = parsed_body.get("CallUUID", [""])[0]
+    
+    # Hangup signal
+    if "CallStatus=completed" in body_str or "CallStatus=busy" in body_str:
+        return Response(content="OK", media_type="text/plain")
+        
+    # Store callUUID → DID so the WebSocket start event can resolve client config
+    if call_uuid and did_number:
+        _call_did_map[call_uuid] = did_number
+
+    host = request.headers.get("host", "localhost:8000")
+    scheme = "wss" if ("ngrok" in host or "khyraai" in host) else "ws"
+    
+    params = {}
+    if caller_phone:
+        params["phone"] = caller_phone
+    if call_uuid:
+        params["call_uuid"] = call_uuid
+    stream_url = f"{scheme}://{host}/stt-vobiz-stream"
+    if params:
+        stream_url += "?" + urllib.parse.urlencode(params)
+    print(f"[Vobiz STT Test] Caller: {caller_phone}  DID: {did_number}  CallUUID: {call_uuid}")
+
+    xml_stream_url = stream_url.replace("&", "&amp;")
+    
+    xml_response = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Stream bidirectional="true" keepCallAlive="true">{xml_stream_url}</Stream>
+    <Wait length="3600" />
+</Response>
+"""
+    return Response(content=xml_response, media_type="application/xml")
+
+
+@app.websocket("/stt-vobiz-stream")
+async def stt_vobiz_stream(websocket: WebSocket):
+    await websocket.accept()
+    call_sid   = "unknown"
+    stream_sid = "unknown"
+    call_active = True
+
+    caller_phone    = websocket.query_params.get("phone", "unknown")
+    call_uuid_param = websocket.query_params.get("call_uuid", "")
+    print(f"\n[Vobiz STT Test] WS query params: {dict(websocket.query_params)}")
+
+    # Immediately resolve DID → client config from /answer mapping
+    did_number = ""
+    client_cfg = get_default_config()
+    client_id  = client_cfg.get("client_id", "default")
+    if call_uuid_param and call_uuid_param in _call_did_map:
+        did_number   = _call_did_map.pop(call_uuid_param)
+        resolved_cfg = get_config_by_did(did_number)
+        if resolved_cfg:
+            client_cfg = resolved_cfg
+            client_id  = client_cfg.get("client_id", "default")
+    print(f"\n[Vobiz STT Test] Call connected | Caller: {caller_phone} | DID: {did_number} | client: {client_id}")
+
+    session_key = "vobiz_call"
+    session_language = None
+
+    is_speaking = False
+    processing_audio = False
+
+    next_stt_allowed_ts = 0.0
+    stt_backoff_secs = 0.0
+
+    vad_config = VadBufferConfig(
+        sample_rate_hz=8000,
+        sample_width_bytes=2,
+        frame_ms=20,
+        start_trigger_ms=60,
+        min_speech_ms=350,
+        silence_end_ms=800,
+        target_chunk_ms=1200,
+        max_chunk_ms=10000,
+        short_utt_min_ms=250,
+        short_utt_max_ms=600,
+        short_utt_silence_ms=150,
+        continuation_min_speech_ms=700,
+        continuation_max_silence_ms=300,
+        cooldown_ms=150,
+        preroll_ms=120,
+        rms_speech_threshold=600,
+    )
+    vad_buffer = SpeechChunkBuffer(vad_config)
+    NOISE_TRANSCRIPTS = {".", "..", "...", "…", "?", "!"}
+
+    async def process_speech_segment(pcm_8k_segment: bytes):
+        nonlocal is_speaking, processing_audio, call_active, session_language
+        nonlocal next_stt_allowed_ts, stt_backoff_secs
+
+        if processing_audio:
+            return
+        processing_audio = True
+        is_speaking = True
+
+        seg_ms = (len(pcm_8k_segment) // 2) * 1000 // 8000
+        duration_s = seg_ms / 1000.0
+        samples = len(pcm_8k_segment) // 2
+        size_kb = len(pcm_8k_segment) / 1024.0
+        
+        buf_rms = 0
+        try:
+            buf_rms = audioop.rms(pcm_8k_segment, 2)
+        except Exception:
+            pass
+
+        log_str = f"\n══════════════ UTTERANCE ══════════════\n\n"
+        log_str += f"🎤 Speech START\n   rms={buf_rms}\n   trigger={vad_config.start_trigger_ms}ms\n\n"
+        log_str += f"🛑 Speech END\n   silence={vad_config.silence_end_ms}ms\n   duration={duration_s:.2f}s\n\n"
+        log_str += f"📦 Segment\n   samples={samples}\n   size={size_kb:.0f}KB\n\n"
+
+        now_ts = time.time()
+        if now_ts < next_stt_allowed_ts:
+            wait_ms = round((next_stt_allowed_ts - now_ts) * 1000)
+            log_str += f"❌ Dropped (Backoff active, {wait_ms}ms remaining)\n"
+            log_str += "════════════════════════════════════════════\n"
+            print(log_str)
+            is_speaking = False
+            processing_audio = False
+            return
+        
+        if buf_rms < 400:
+            log_str += f"❌ Dropped (Below noise floor)\n"
+            log_str += "════════════════════════════════════════════\n"
+            print(log_str)
+            is_speaking = False
+            processing_audio = False
+            return
+
+        try:
+            pcm_16k = l16_8k_to_pcm16_16k(pcm_8k_segment)
+            wav_bytes = pcm16_to_wav_bytes(pcm_16k, 16000)
+            
+            t0 = time.time()
+            _stt_lang = session_language if session_language else (
+                "kn-IN" if get_client_default_language(client_cfg, "en") == "kn" else "en-IN"
+            )
+            log_str += f"➡️ STT REQUEST\n   provider=Sarvam\n   hint={_stt_lang}\n\n"
+            
+            user_text, detected_lang = await run_stt_http(
+                wav_bytes,
+                language_code=_stt_lang,
+                session_id=session_key,
+                client_id=client_id,
+            )
+            stt_time = time.time() - t0
+            
+            log_str += f"⬅️ STT RESPONSE ({stt_time*1000:.0f}ms)\n"
+            log_str += f"   language={detected_lang}\n"
+            log_str += f"   text=\"{user_text}\"\n\n"
+
+            if user_text.strip():
+                stt_backoff_secs = 0.0
+                next_stt_allowed_ts = time.time() + 0.8
+            else:
+                stt_backoff_secs = min(8.0, (stt_backoff_secs * 2.0) if stt_backoff_secs else 1.5)
+                next_stt_allowed_ts = time.time() + stt_backoff_secs
+
+            if not user_text.strip():
+                log_str += "❌ Dropped (Empty transcription)\n"
+                log_str += "════════════════════════════════════════════\n"
+                print(log_str)
+                is_speaking = False
+                processing_audio = False
+                return
+
+            if detected_lang == "unknown":
+                log_str += "🚨 HALLUCINATION detected\n"
+                log_str += "════════════════════════════════════════════\n"
+                print(log_str)
+                is_speaking = False
+                processing_audio = False
+                return
+
+            stripped = user_text.strip()
+            if stripped in NOISE_TRANSCRIPTS:
+                log_str += f"🔕 NOISE filtered (matched '{stripped}')\n"
+                log_str += "════════════════════════════════════════════\n"
+                print(log_str)
+                is_speaking = False
+                processing_audio = False
+                return
+            
+            if not session_language:
+                effective_lang = "kn" if str(detected_lang).lower().startswith("kn") else "en"
+                session_language = effective_lang
+            else:
+                effective_lang = session_language
+                
+            log_str += "✅ Accepted\n"
+            log_str += "════════════════════════════════════════════\n"
+            print(log_str)
+
+            payload = {
+                "text": user_text.strip(),
+                "lang": effective_lang,
+                "time": time.time()
+            }
+            # Broadcast to all connected UI clients
+            dead_sockets = []
+            for client_ws in stt_ui_connections:
+                try:
+                    await client_ws.send_json(payload)
+                except Exception:
+                    dead_sockets.append(client_ws)
+            for ds in dead_sockets:
+                if ds in stt_ui_connections:
+                    stt_ui_connections.remove(ds)
+        except Exception as e:
+            print(f"[STT-TEST] Error processing segment: {e}")
+        finally:
+            is_speaking = False
+            processing_audio = False
+
+    vobiz_encoding = "audio/x-mulaw"
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+            msg = json.loads(data)
+            event = msg.get("event", "")
+            
+            if event == "start":
+                print("[STT-TEST] Stream started")
+                info = msg.get("start", {})
+                stream_sid = info.get("streamId", info.get("streamSid", "unknown"))
+                fmt = info.get("mediaFormat", {})
+                vobiz_encoding = fmt.get("encoding", "audio/x-mulaw").lower()
+                
+                if "audio/x-l16" in vobiz_encoding or "l16" in vobiz_encoding:
+                    vad_buffer.set_rms_speech_threshold(250)
+                else:
+                    vad_buffer.set_rms_speech_threshold(350)
+                
+            elif event == "media":
+                payload_b64 = msg.get("media", {}).get("payload", "")
+                if not payload_b64:
+                    continue
+                    
+                raw_chunk = base64.b64decode(payload_b64)
+                
+                # Convert to PCM s16le 8kHz for VAD (regardless of source encoding)
+                if "mulaw" in vobiz_encoding or "ulaw" in vobiz_encoding:
+                    pcm_chunk = audioop.ulaw2lin(raw_chunk, 2)
+                else:
+                    pcm_chunk = raw_chunk
+                
+                segments = vad_buffer.ingest(pcm_chunk)
+                for segment in segments:
+                    if not is_speaking and not processing_audio:
+                        asyncio.create_task(process_speech_segment(segment))
+                    
+            elif event == "stop":
+                print("[STT-TEST] Stream stopped")
+                call_active = False
+                final_segment = vad_buffer.flush()
+                if final_segment and not is_speaking:
+                    await process_speech_segment(final_segment)
+                break
+    except WebSocketDisconnect:
+        call_active = False
+        print("[STT-TEST] WebSocket disconnected")
+    except Exception as e:
+        call_active = False
+        print(f"[STT-TEST] Error: {e}")
+
+# =======================================================================
 # VOBIZ TELEPHONY ENDPOINTS
 # =======================================================================
 
@@ -835,49 +1304,62 @@ async def vobiz_stream(websocket: WebSocket):
         continuation_max_silence_ms=300,
         cooldown_ms=150,
         preroll_ms=120,
-        rms_speech_threshold=350,
+        rms_speech_threshold=600,
     )
     vad_buffer = SpeechChunkBuffer(vad_config)
 
     # Only drop truly non-meaningful artifacts — all real words pass to LLM
     NOISE_TRANSCRIPTS = {".", "..", "...", "…", "?", "!"}
+    utterance_count = 0
 
     async def process_speech_segment(pcm_8k_segment: bytes):
         """Process a complete speech segment emitted by VAD buffer."""
         nonlocal is_speaking, processing_audio, memory, state
         nonlocal session_language, agent1_ran, agent1_context, in_agent3, agent3_state
         nonlocal next_stt_allowed_ts, stt_backoff_secs, call_active
-        nonlocal pending_payload, pending_payload_sent
+        nonlocal pending_payload, pending_payload_sent, utterance_count
 
         if processing_audio:
-            print(f"[PIPE] ⏭️  Skipped — already processing")
             return
         processing_audio = True
         is_speaking = True
 
+        utterance_count += 1
+        curr_utt = utterance_count
+
         seg_ms = (len(pcm_8k_segment) // 2) * 1000 // 8000
-        pipe_t0 = time.time()
-        print(f"[PIPE] =====================================================")
-        print(f"[PIPE] 🔊 Segment  {len(pcm_8k_segment)}B / {seg_ms}ms  session_lang='{session_language}'  agent1_ran={agent1_ran}")
+        duration_s = seg_ms / 1000.0
+        samples = len(pcm_8k_segment) // 2
+        size_kb = len(pcm_8k_segment) / 1024.0
+
+        buf_rms = 0
+        try:
+            buf_rms = audioop.rms(pcm_8k_segment, 2)
+        except Exception:
+            pass
+
+        log_str = f"\n══════════════ UTTERANCE #{curr_utt} ══════════════\n\n"
+        log_str += f"🎤 Speech START\n   rms={buf_rms}\n   trigger={vad_config.start_trigger_ms}ms\n\n"
+        log_str += f"🛑 Speech END\n   silence={vad_config.silence_end_ms}ms\n   duration={duration_s:.2f}s\n\n"
+        log_str += f"📦 Segment\n   samples={samples}\n   size={size_kb:.0f}KB\n\n"
 
         now_ts = time.time()
         if now_ts < next_stt_allowed_ts:
             wait_ms = round((next_stt_allowed_ts - now_ts) * 1000)
-            print(f"[PIPE] ⏳ Backoff active — skipping ({wait_ms}ms remaining)")
+            log_str += f"❌ Dropped (Backoff active, {wait_ms}ms remaining)\n"
+            log_str += "════════════════════════════════════════════\n"
+            print(log_str)
             is_speaking = False
             processing_audio = False
             return
 
-        try:
-            buf_rms = audioop.rms(pcm_8k_segment, 2)
-            if buf_rms < 200:
-                print(f"[PIPE] 🔇 RMS={buf_rms} below noise floor — skip")
-                is_speaking = False
-                processing_audio = False
-                return
-            print(f"[PIPE] 🟢 RMS={buf_rms} — proceeding to STT")
-        except Exception:
-            pass
+        if buf_rms < 400:
+            log_str += f"❌ Dropped (Below noise floor)\n"
+            log_str += "════════════════════════════════════════════\n"
+            print(log_str)
+            is_speaking = False
+            processing_audio = False
+            return
 
         parsed = {}
         effective_lang = "en"
@@ -887,7 +1369,6 @@ async def vobiz_stream(websocket: WebSocket):
         llm_time = 0.0
 
         try:
-            # VAD buffer already emits PCM s16le 8kHz — just upsample to 16kHz
             pcm_16k = l16_8k_to_pcm16_16k(pcm_8k_segment)
             wav_bytes = pcm16_to_wav_bytes(pcm_16k, 16000)
 
@@ -895,7 +1376,8 @@ async def vobiz_stream(websocket: WebSocket):
             _stt_lang = session_language if session_language else (
                 "kn-IN" if get_client_default_language(client_cfg, "en") == "kn" else "en-IN"
             )
-            print(f"[PIPE] 🎙️  STT start  hint='{_stt_lang}'  wav={len(wav_bytes)}B")
+            log_str += f"➡️ STT REQUEST\n   provider=Sarvam\n   hint={_stt_lang}\n\n"
+            
             user_text, detected_lang = await run_stt_http(
                 wav_bytes,
                 language_code=_stt_lang,
@@ -903,7 +1385,10 @@ async def vobiz_stream(websocket: WebSocket):
                 client_id=client_id,
             )
             stt_time = time.time() - t0
-            print(f"[PIPE] ✅ STT done  text='{user_text[:60]}'  lang='{detected_lang}'  latency={stt_time*1000:.0f}ms")
+            
+            log_str += f"⬅️ STT RESPONSE ({stt_time*1000:.0f}ms)\n"
+            log_str += f"   language={detected_lang}\n"
+            log_str += f"   text=\"{user_text}\"\n\n"
 
             if user_text.strip():
                 stt_backoff_secs = 0.0
@@ -913,12 +1398,15 @@ async def vobiz_stream(websocket: WebSocket):
                 next_stt_allowed_ts = time.time() + stt_backoff_secs
 
             if not user_text.strip():
+                log_str += "❌ Dropped (Empty transcription)\n"
+                log_str += "════════════════════════════════════════════\n"
+                print(log_str)
                 return
 
-            # Script hallucination guard: STT returned non-Kannada/non-English script
-            # Short-circuit to "please repeat" TTS — skips LLM to save latency
             if detected_lang == "unknown":
-                print(f"[PIPE] 🚨 HALLUCINATION detected  text='{user_text[:50]}'  stt_latency={stt_time*1000:.0f}ms  → short-circuit to repeat-TTS (no LLM)")
+                log_str += "🚨 HALLUCINATION detected\n"
+                log_str += "════════════════════════════════════════════\n"
+                print(log_str)
                 _repeat_lang = session_language if session_language else "en"
                 _repeat_text = (
                     "\u0C95\u0CCD\u0CB7\u0CAE\u0CBF\u0CB8\u0CBF, \u0CAE\u0CA4\u0CCD\u0CA4\u0CC6 \u0CB9\u0CC7\u0CB3\u0CBF."
@@ -941,21 +1429,26 @@ async def vobiz_stream(websocket: WebSocket):
 
             stripped = user_text.strip()
             if stripped in NOISE_TRANSCRIPTS:
-                print(f"[PIPE] 🔕 NOISE filtered  text='{user_text}'")
+                log_str += f"🔕 NOISE filtered (matched '{stripped}')\n"
+                log_str += "════════════════════════════════════════════\n"
+                print(log_str)
                 return
 
             if not call_active:
                 return
 
             t1 = time.time()
-            # ── Language lock: use session_language if already set; only use STT on first turn ──
             if session_language:
                 effective_lang = session_language
-                print(f"[PIPE] 🔐 Lang LOCKED  session='{session_language}'  stt_detected='{detected_lang}'  → using '{effective_lang}'")
+                log_str += f"🔐 Lang LOCKED → using '{effective_lang}'\n\n"
             else:
                 effective_lang = "kn" if str(detected_lang).lower().startswith("kn") else "en"
                 session_language = effective_lang
-                print(f"[PIPE] 🔑 Lang SET (first turn)  stt='{detected_lang}'  → locked='{session_language}'")
+                log_str += f"🔑 Lang SET (first turn) → locked='{session_language}'\n\n"
+
+            log_str += "✅ Accepted\n"
+            log_str += "════════════════════════════════════════════\n"
+            print(log_str)
 
             # ── Security guardrail pre-check (before any LLM call) ──────────
             _blocked, _guard_response = check_guardrails(user_text, lang=effective_lang)
