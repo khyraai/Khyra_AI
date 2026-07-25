@@ -236,7 +236,24 @@ def build_scheduling_payload(
 def parse_llm_json(text: str) -> dict:
     text = text.strip()
     try:
-        return json.loads(text)
+        result = json.loads(text)
+        # LLM sometimes returns a JSON array for multi-part questions — merge into one dict
+        if isinstance(result, list):
+            if not result:
+                result = {}
+            elif len(result) == 1:
+                result = result[0] if isinstance(result[0], dict) else {}
+            else:
+                # Merge: join all 'response' strings, take other fields from first item
+                base = result[0] if isinstance(result[0], dict) else {}
+                responses = [
+                    item.get("response", "")
+                    for item in result
+                    if isinstance(item, dict) and item.get("response", "").strip()
+                ]
+                base["response"] = " ".join(responses)
+                result = base
+        return result
     except json.JSONDecodeError:
         pass
     match = re.search(r'\{.*\}', text, re.DOTALL)
