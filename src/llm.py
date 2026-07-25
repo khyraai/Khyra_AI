@@ -225,9 +225,9 @@ class LLMPool:
 
                 if is_rl:
                     rl_hits += 1
-                    print(f"[LLM Pool] [429] rate-limit on key[{ki}] -- rotating to next key")
+                    print(f"[LLM Pool] [429] rate-limit on key[{ki}] | type={type(exc).__name__} | {exc}")
                 else:
-                    print(f"[LLM Pool] [ERR] Error key[{ki}] attempt {attempt + 1}/{max_att}: {exc}")
+                    print(f"[LLM Pool] [ERR] Error key[{ki}] attempt {attempt + 1}/{max_att} | type={type(exc).__name__} | {exc}")
 
                 retries += 1
                 ki = self._next()       # sync call — no await needed

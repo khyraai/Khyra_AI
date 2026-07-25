@@ -1373,6 +1373,7 @@ async def vobiz_stream(websocket: WebSocket):
             wav_bytes = pcm16_to_wav_bytes(pcm_16k, 16000)
 
             t0 = time.time()
+            pipe_t0 = t0  # end-to-end pipeline start (STT → LLM → TTS)
             _stt_lang = session_language if session_language else (
                 "kn-IN" if get_client_default_language(client_cfg, "en") == "kn" else "en-IN"
             )
