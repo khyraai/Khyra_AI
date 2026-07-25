@@ -1478,16 +1478,28 @@ async def vobiz_stream(websocket: WebSocket):
 
                 raw_lang = agent1_parsed.get("language", "en")
                 if raw_lang in ("kn", "en"):
-                    session_language = raw_lang
-                    print(f"[Vobiz][LANG] Agent-1 override → {session_language}")
+                    if not session_language:
+                        # STT hasn't locked a language yet — let Agent-1 set it
+                        session_language = raw_lang
+                        print(f"[Vobiz][LANG] Agent-1 set → {session_language}")
+                    elif intent == "greeting":
+                        # On greetings, STT-locked language always wins.
+                        # Agent-1's prompt is Kannada-biased and returns 'kn' even for English callers.
+                        print(f"[Vobiz][LANG] Greeting — keeping STT lang='{session_language}' (Agent-1 suggested '{raw_lang}')")
+                    else:
+                        # Non-greeting: Agent-1 wins for Kanglish / script detection
+                        session_language = raw_lang
+                        print(f"[Vobiz][LANG] Agent-1 override → {session_language}")
 
                 effective_lang = session_language if session_language else effective_lang
 
                 if intent == "greeting":
-                    response_text = agent1_parsed.get(
-                        "response",
-                        "Hello! Welcome to Doctor Deepti's Dental and Orthodontic Clinic. How can I help you today?" if effective_lang == "en" else "à²¨à²®à²¸à³à²•à²¾à²°, à²¡à²¾à²•à³à²Ÿà²°à³ à²¦à³€à²ªà³à²¤à²¿ à²…à²µà²° à²¡à³†à²‚à²Ÿà²²à³ à²®à²¤à³à²¤à³ à²†à²°à³à²¥à³Šà²¡à²¾à²‚à²Ÿà²¿à²•à³ à²•à³à²²à²¿à²¨à²¿à²•à³ à²—à³† à²¸à³à²µà²¾à²—à²¤. à²¨à²¾à²¨à³ à²¨à²¿à²®à²—à³† à²¹à³‡à²—à³† à²¸à²¹à²¾à²¯ à²®à²¾à²¡à²²à²¿?"
-                    )
+                    # Always build greeting from effective_lang — never trust Agent-1’s
+                    # response field which is hardcoded Kannada regardless of caller language
+                    if effective_lang == "en":
+                        response_text = "Hello! Welcome to Sales test clinic. How can I help you today?"
+                    else:
+                        response_text = "ನಮಸ್ಕಾರ, Sales test clinic ಗೆ ಸ್ವಾಗತ. ನಾನು ನಿಮಗೆ ಹೇಗೆ ಸಹಾಯ ಮಾಡಲಿ?"
                     parsed = agent1_parsed
                 elif intent == "system_check":
                     agent1_ran = True

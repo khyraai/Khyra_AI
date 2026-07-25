@@ -161,7 +161,7 @@ treatment:
 RESPONSE RULE:
 
 - ONLY greeting and emergency should have response:
-  - Greeting: "ನಮಸ್ಕಾರ, ಏನು ಸಹಾಯ ಬೇಕಿತ್ತು?"
+  - Greeting: ""  (leave empty — downstream main.py builds the greeting in the correct language)
   - Emergency: "ಡಾಕ್ಟರ್ ಗೆ ಕನೆಕ್ಟ್ ಮಾಡ್ತೀವಿ ಒಂದು ನಿಮಿಷ."
 
 - All others:
