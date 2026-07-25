@@ -187,16 +187,16 @@ async def run_agent2(user_text: str, memory: list, state: dict, agent1_context: 
             state.pop("time", None)
         
         memory_with_check = memory + [
-            {"role": "user", "content": user_text},
+            {"role": "user",      "content": user_text},
             {"role": "assistant", "content": "Let me check the schedule..."},
-            {"role": "user", "content": status_msg}
+            {"role": "system",    "content": status_msg}
         ]
         state["availability_checked"] = True
         response, state, parsed = await _run_agent2_kn("ದಯವಿಟ್ಟು ಮುಂದುವರಿಯಿರಿ.", memory_with_check, state, agent1_context, groq_client, config)
     return response, state, parsed
 
-async def run_agent2_en(user_text: str, memory: list, state: dict, agent1_context: dict, config: dict = None):
-    response, state, parsed = await _run_agent2_en(user_text, memory, state, agent1_context, groq_client, config)
+async def run_agent2_en(user_text: str, memory: list, state: dict, agent1_context: dict, config: dict = None, last_bot_response: str = ""):
+    response, state, parsed = await _run_agent2_en(user_text, memory, state, agent1_context, groq_client, config, last_bot_response=last_bot_response)
 
     # Guard: LLM skipped CHECK_AVAILABILITY but all fields are filled
     if (
@@ -264,9 +264,9 @@ async def run_agent2_en(user_text: str, memory: list, state: dict, agent1_contex
             state.pop("time", None)
         
         memory_with_check = memory + [
-            {"role": "user", "content": user_text},
+            {"role": "user",      "content": user_text},
             {"role": "assistant", "content": "Let me check the schedule..."},
-            {"role": "user", "content": status_msg}
+            {"role": "system",    "content": status_msg}
         ]
         state["availability_checked"] = True
         response, state, parsed = await _run_agent2_en("Please proceed based on the availability.", memory_with_check, state, agent1_context, groq_client, config)
@@ -1266,6 +1266,7 @@ async def vobiz_stream(websocket: WebSocket):
     state["connection_id"] = client_cfg.get("connection_id", client_id)
     memory = []
     transcript_log = []
+    last_bot_response: str = ""  # tracks the last response Divya gave (Problem-2 anchor)
 
     session_key = "vobiz_call"
     vobiz_encoding = "audio/x-mulaw"
@@ -1520,7 +1521,7 @@ async def vobiz_stream(websocket: WebSocket):
                 else:
                     print(f"[VOBIZ ROUTER] Agent-2 ({effective_lang}) | Intent: {intent}")
                     if effective_lang == "en":
-                        response_text, _new_state, parsed = await run_agent2_en(user_text, memory, state, agent1_context, config=client_cfg)
+                        response_text, _new_state, parsed = await run_agent2_en(user_text, memory, state, agent1_context, config=client_cfg, last_bot_response=last_bot_response)
                     else:
                         response_text, _new_state, parsed = await run_agent2(user_text, memory, state, agent1_context, config=client_cfg)
                     if _new_state:
@@ -1535,7 +1536,7 @@ async def vobiz_stream(websocket: WebSocket):
                         response_text, agent3_state, parsed = await run_agent3_kn(user_text, memory, agent3_state, agent1_context, config=client_cfg)
                 else:
                     if effective_lang == "en":
-                        response_text, _new_state, parsed = await run_agent2_en(user_text, memory, state, agent1_context, config=client_cfg)
+                        response_text, _new_state, parsed = await run_agent2_en(user_text, memory, state, agent1_context, config=client_cfg, last_bot_response=last_bot_response)
                     else:
                         response_text, _new_state, parsed = await run_agent2(user_text, memory, state, agent1_context, config=client_cfg)
                     if _new_state:
@@ -1578,8 +1579,9 @@ async def vobiz_stream(websocket: WebSocket):
             memory.append({"role": "assistant", "content": response_text})
             transcript_log.append({"speaker": "user", "text": user_text})
             transcript_log.append({"speaker": "bot",  "text": response_text})
-            if len(memory) > 18:
-                memory = memory[-18:]
+            last_bot_response = response_text  # anchor for next turn (Problem-2)
+            if len(memory) > 12:
+                memory = memory[-12:]
 
             # ── Agent-2: new appointment ──────────────────────────────────
             if (

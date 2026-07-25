@@ -47,7 +47,7 @@ async def _ensure_english_ascii(text: str, groq_client) -> str:
 # -----------------------------------------------------------------------
 # Prompt
 # -----------------------------------------------------------------------
-def build_agent2_en_prompt(config: dict = None, state: dict = None, agent1_context: dict = None) -> str:
+def build_agent2_en_prompt(config: dict = None, state: dict = None, agent1_context: dict = None, last_bot_response: str = "") -> str:
     from datetime import datetime, timedelta
 
     if config is None:
@@ -68,7 +68,12 @@ def build_agent2_en_prompt(config: dict = None, state: dict = None, agent1_conte
     }
     day_refs_str = "; ".join(f'"{k}" = {v}' for k, v in day_refs.items())
 
-    state_desc = ", ".join([f"{k}: {v if v else 'unknown'}" for k, v in state.items()])
+    # Only show fields that are actually confirmed (non-null, non-empty, non-unknown)
+    confirmed_state = {
+        k: v for k, v in state.items()
+        if v is not None and str(v).strip() and str(v).strip().lower() not in ("unknown", "none", "")
+    }
+    state_desc = ", ".join([f"{k}: {v}" for k, v in confirmed_state.items()]) if confirmed_state else "none yet"
 
     clinic_name = config.get("clinic_name", "Doctor Deepti's Dental and Orthodontic Centre")
     doctor_name = config.get("doctor_name", "Doctor Naga Deepti")
@@ -312,16 +317,19 @@ OUTPUT FORMAT (STRICT JSON):
 AGENT 1 CONTEXT:
 {agent1_context}
 
-CURRENT STATE:
+CURRENT STATE (confirmed fields only):
 {state_desc}
+
+LAST QUESTION YOU ASKED:
+{last_bot_response if last_bot_response else "(start of call — no previous question)"}
 """
 
 # -----------------------------------------------------------------------
 # Runner
 # -----------------------------------------------------------------------
-async def run_agent2_en(user_text: str, memory: list, state: dict, agent1_context: dict, groq_client, config: dict = None) -> tuple:
+async def run_agent2_en(user_text: str, memory: list, state: dict, agent1_context: dict, groq_client, config: dict = None, last_bot_response: str = "") -> tuple:
     """Runs English Agent-2 for the main conversational response."""
-    system_prompt = build_agent2_en_prompt(config=config, state=state, agent1_context=agent1_context)
+    system_prompt = build_agent2_en_prompt(config=config, state=state, agent1_context=agent1_context, last_bot_response=last_bot_response)
     messages = [{"role": "system", "content": system_prompt}] + memory + [{"role": "user", "content": user_text}]
     try:
         chat_completion = await asyncio.wait_for(
