@@ -272,10 +272,23 @@ def _retry_backoff_sec(attempt_index: int) -> float:
 
 
 def _sanitize_text(text: str) -> str:
-    """Trim whitespace and truncate to TTS_MAX_CHARS_PER_REQUEST."""
+    """Trim whitespace, sanitize emojis/markdown/annotations, and truncate."""
     t = (text or "").strip()
     if not t:
         return ""
+    
+    # 1. Remove stage directions in asterisks or brackets (e.g., *sigh*, [laughs])
+    t = re.sub(r'\*[^*]+\*', '', t)
+    t = re.sub(r'\[[^\]]+\]', '', t)
+    
+    # 2. Remove remaining markdown formatting (asterisks, underscores, hashes, tildes)
+    t = re.sub(r'[*_#~]', '', t)
+    
+    # 3. Remove emojis (basic unicode range for emojis and pictographs)
+    t = re.sub(r'[\U00010000-\U0010ffff]', '', t)
+    
+    t = t.strip()
+    # 4. Truncate to TTS_MAX_CHARS_PER_REQUEST
     if len(t) > _MAX_CHARS_PER_REQUEST:
         t = t[:_MAX_CHARS_PER_REQUEST]
     return t
