@@ -1468,57 +1468,159 @@ async def vobiz_stream(websocket: WebSocket):
             first_tts_audio_ts = None
             streamed_any = False
 
-            async def stream_sentence_to_tts(sentence: str):
-                nonlocal tts_total_bytes, first_tts_started_ts, first_tts_audio_ts
-                if not sentence or not call_active:
-                    return
-                
-                now = time.time()
-                start_ref = llm_request_started if llm_request_started > 0 else t1
-                elapsed_ms = (now - start_ref) * 1000
-                print(f"⬅️ LLM STREAM CHUNK ({elapsed_ms:.0f}ms)\n   text=\"{sentence}\"\n")
-                
-                if first_tts_started_ts is None and llm_request_started > 0:
-                    first_tts_started_ts = time.time()
-                    req_to_tts_started = (first_tts_started_ts - llm_request_started) * 1000
-                    print(f"[BENCHMARK] LLM Request ➔ First TTS request: {req_to_tts_started:.2f}ms")
-                
-                is_first_chunk = True
-                async for chunk in cartesia_tts_chunked(sentence, language=effective_lang):
-                    if not call_active:
-                        break
-                    chunk = chunk[:len(chunk) & ~1]
-                    if not chunk:
-                        continue
-                    
-                    tts_total_bytes += len(chunk)
-                    
-                    if is_first_chunk:
-                        is_first_chunk = False
-                        if first_tts_audio_ts is None and llm_request_started > 0:
-                            first_tts_audio_ts = time.time()
-                            req_to_first_audio = (first_tts_audio_ts - llm_request_started) * 1000
-                            print(f"[BENCHMARK] LLM Request ➔ First TTS audio: {req_to_first_audio:.2f}ms")
-                            
-                    out_chunk, _ = audioop.ratecv(chunk, 2, 1, 16000, 8000, None)
-                    frame = json.dumps({
-                        "event": "playAudio",
-                        "media": {
-                            "contentType": "audio/x-l16",
-                            "sampleRate": 8000,
-                            "payload": base64.b64encode(out_chunk).decode(),
-                        },
-                    })
-                    await websocket.send_text(frame)
+
 
             async def play_tts_queue():
+                """
+                Hybrid Live-Stream + Prefetch TTS Player.
+
+                1. For Sentence 1 (or any sentence without a pre-buffered audio cache),
+                   we live-stream audio chunks directly to the WebSocket as Sarvam yields
+                   them. This gives minimal Time-to-First-Audio (~300ms after LLM sentence completion).
+                2. While Sentence 1 is streaming audio over the WebSocket, if Sentence 2
+                   arrives in the queue, we kick off a background prefetch task `_synthesise(Sentence 2)`.
+                3. When Sentence 1 finishes playing, Sentence 2's audio is already cached in memory
+                   and plays instantly with zero synthesis gap.
+                """
+                prefetch_task: asyncio.Task | None = None
+                prefetch_sentence: str | None = None
+
+                async def _synthesise(s: str) -> list[bytes]:
+                    """Background prefetch helper: collects PCM chunks into a list."""
+                    buf: list[bytes] = []
+                    try:
+                        async for chunk in cartesia_tts_chunked(s, language=effective_lang):
+                            chunk = chunk[:len(chunk) & ~1]
+                            if chunk:
+                                buf.append(chunk)
+                    except Exception as e:
+                        print(f"[TTS Prefetch Error] {e}")
+                    return buf
+
+                async def _play_pcm(s: str, buf: list[bytes]):
+                    """Plays pre-buffered PCM chunks onto the WebSocket."""
+                    nonlocal tts_total_bytes, first_tts_started_ts, first_tts_audio_ts
+                    now = time.time()
+                    start_ref = llm_request_started if llm_request_started > 0 else t1
+                    elapsed_ms = (now - start_ref) * 1000
+                    print(f"⬅️ LLM STREAM CHUNK ({elapsed_ms:.0f}ms)\n   text=\"{s}\"\n")
+                    if first_tts_started_ts is None and llm_request_started > 0:
+                        first_tts_started_ts = time.time()
+                        print(f"[BENCHMARK] LLM Request ➔ First TTS request: {(first_tts_started_ts - llm_request_started)*1000:.2f}ms")
+                    is_first = True
+                    for chunk in buf:
+                        if not call_active:
+                            break
+                        tts_total_bytes += len(chunk)
+                        if is_first:
+                            is_first = False
+                            if first_tts_audio_ts is None and llm_request_started > 0:
+                                first_tts_audio_ts = time.time()
+                                print(f"[BENCHMARK] LLM Request ➔ First TTS audio: {(first_tts_audio_ts - llm_request_started)*1000:.2f}ms")
+                        out_chunk, _ = audioop.ratecv(chunk, 2, 1, 16000, 8000, None)
+                        await websocket.send_text(json.dumps({
+                            "event": "playAudio",
+                            "media": {
+                                "contentType": "audio/x-l16",
+                                "sampleRate": 8000,
+                                "payload": base64.b64encode(out_chunk).decode(),
+                            },
+                        }))
+
+                async def _stream_live(s: str):
+                    """Live-streams audio chunks to WebSocket as they arrive from Sarvam."""
+                    nonlocal tts_total_bytes, first_tts_started_ts, first_tts_audio_ts, prefetch_task, prefetch_sentence
+                    if not s or not call_active:
+                        return
+
+                    now = time.time()
+                    start_ref = llm_request_started if llm_request_started > 0 else t1
+                    elapsed_ms = (now - start_ref) * 1000
+                    print(f"⬅️ LLM STREAM CHUNK ({elapsed_ms:.0f}ms)\n   text=\"{s}\"\n")
+
+                    if first_tts_started_ts is None and llm_request_started > 0:
+                        first_tts_started_ts = time.time()
+                        print(f"[BENCHMARK] LLM Request ➔ First TTS request: {(first_tts_started_ts - llm_request_started)*1000:.2f}ms")
+
+                    is_first = True
+                    async for chunk in cartesia_tts_chunked(s, language=effective_lang):
+                        if not call_active:
+                            break
+                        chunk = chunk[:len(chunk) & ~1]
+                        if not chunk:
+                            continue
+
+                        # Check if a next sentence has arrived in the queue while we are streaming
+                        if prefetch_task is None and tts_queue.qsize() > 0:
+                            peeked = next(iter(tts_queue._queue), None)
+                            if peeked is not None and peeked != s and prefetch_sentence != peeked:
+                                prefetch_sentence = peeked
+                                prefetch_task = asyncio.create_task(_synthesise(peeked))
+
+                        tts_total_bytes += len(chunk)
+                        if is_first:
+                            is_first = False
+                            if first_tts_audio_ts is None and llm_request_started > 0:
+                                first_tts_audio_ts = time.time()
+                                print(f"[BENCHMARK] LLM Request ➔ First TTS audio: {(first_tts_audio_ts - llm_request_started)*1000:.2f}ms")
+
+                        out_chunk, _ = audioop.ratecv(chunk, 2, 1, 16000, 8000, None)
+                        await websocket.send_text(json.dumps({
+                            "event": "playAudio",
+                            "media": {
+                                "contentType": "audio/x-l16",
+                                "sampleRate": 8000,
+                                "payload": base64.b64encode(out_chunk).decode(),
+                            },
+                        }))
+
                 while True:
                     sentence = await tts_queue.get()
-                    if sentence is None:
+
+                    if sentence is None:  # Sentinel
+                        if prefetch_task and not prefetch_task.done():
+                            prefetch_task.cancel()
+                            try:
+                                await prefetch_task
+                            except (asyncio.CancelledError, Exception):
+                                pass
                         tts_queue.task_done()
                         break
+
                     try:
-                        await stream_sentence_to_tts(sentence)
+                        # ── Case A: Prefetch is running/ready for this sentence ──
+                        if prefetch_task is not None and prefetch_sentence == sentence:
+                            try:
+                                audio_buf = await prefetch_task
+                            except Exception as e:
+                                print(f"[TTS Prefetch await Error] {e}")
+                                audio_buf = []
+                            prefetch_task = None
+                            prefetch_sentence = None
+
+                            # Peek at queue to start prefetch for sentence N+1
+                            if tts_queue.qsize() > 0:
+                                peeked = next(iter(tts_queue._queue), None)
+                                if peeked is not None and prefetch_sentence != peeked:
+                                    prefetch_sentence = peeked
+                                    prefetch_task = asyncio.create_task(_synthesise(peeked))
+
+                            if audio_buf:
+                                await _play_pcm(sentence, audio_buf)
+
+                        # ── Case B: No prefetch available → Live-stream chunk by chunk ──
+                        else:
+                            if prefetch_task and not prefetch_task.done():
+                                prefetch_task.cancel()
+                                try:
+                                    await prefetch_task
+                                except (asyncio.CancelledError, Exception):
+                                    pass
+                            prefetch_task = None
+                            prefetch_sentence = None
+
+                            await _stream_live(sentence)
+
                     except Exception as tts_e:
                         print(f"[TTS Stream Error] {tts_e}")
                     finally:

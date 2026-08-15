@@ -626,12 +626,13 @@ class SentenceSplitterBuffer:
         while True:
             boundary_idx = -1
             for i, ch in enumerate(self.buffer):
-                if ch in ".!?\n":
+                is_hard = ch in ".!?\n"
+                is_clause = ch in ",;:"
+                
+                if is_hard or is_clause:
                     if ch == ".":
-                        # Skip decimals: digit.digit
                         if i > 0 and i < len(self.buffer) - 1 and self.buffer[i-1].isdigit() and self.buffer[i+1].isdigit():
                             continue
-                        # Skip abbreviations: short word before dot
                         word_start = i - 1
                         while word_start >= 0 and self.buffer[word_start].isalpha():
                             word_start -= 1
@@ -640,7 +641,7 @@ class SentenceSplitterBuffer:
                             continue
                     
                     candidate = self.buffer[:i+1].strip()
-                    if len(candidate) >= self.min_length or "\n" in candidate:
+                    if is_hard or (len(candidate) >= 25):
                         boundary_idx = i
                         break
             
