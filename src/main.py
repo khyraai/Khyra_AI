@@ -24,7 +24,7 @@ from llm import llm_pool, LLM_MODEL
 from utils import (
     get_initial_state, parse_llm_json, log_interaction,
     build_scheduling_payload, SessionStore, trigger_vobiz_transfer,
-    send_to_n8n_webhook_sync, check_guardrails
+    send_to_n8n_webhook_sync, check_guardrails, SentenceSplitterBuffer
 )
 from agent1 import run_agent1 as _run_agent1
 from agent2_kn import run_agent2_kn as _run_agent2_kn
@@ -110,6 +110,7 @@ async def clear_session(session_id: str = ""):
 
 # -----------------------------------------------------------------------
 # Local wrappers â€” bind shared clients so callers need no arguments
+# Local wrappers — bind shared clients so callers need no arguments
 # -----------------------------------------------------------------------
 async def run_agent1(user_text: str, memory: list) -> dict:
     return await _run_agent1(user_text, memory, groq_client)
@@ -118,8 +119,8 @@ def _all_appointment_fields_present(st: dict) -> bool:
     """True when name, age, reason, date AND time are all non-empty."""
     return all(st.get(k) for k in ("name", "age", "reason", "date", "time"))
 
-async def run_agent2(user_text: str, memory: list, state: dict, agent1_context: dict, config: dict = None):
-    response, state, parsed = await _run_agent2_kn(user_text, memory, state, agent1_context, groq_client, config)
+async def run_agent2(user_text: str, memory: list, state: dict, agent1_context: dict, config: dict = None, on_response_text=None):
+    response, state, parsed = await _run_agent2_kn(user_text, memory, state, agent1_context, groq_client, config, on_response_text)
 
     # Guard: LLM skipped CHECK_AVAILABILITY but all fields are filled
     if (
@@ -129,7 +130,7 @@ async def run_agent2(user_text: str, memory: list, state: dict, agent1_context: 
         and not state.get("availability_checked")
         and not parsed.get("done")
     ):
-        print("[Agent-2-KN] \u26a0\ufe0f All fields present but CHECK_AVAILABILITY skipped \u2014 forcing it")
+        print("[Agent-2-KN] ⚠️ All fields present but CHECK_AVAILABILITY skipped — forcing it")
         parsed["action"] = "CHECK_AVAILABILITY"
 
     if parsed.get("action") == "CHECK_AVAILABILITY":
@@ -145,11 +146,11 @@ async def run_agent2(user_text: str, memory: list, state: dict, agent1_context: 
 
         valid, hours_msg = _is_valid_clinic_slot(raw_date, check_time)
         if not valid:
-            print(f"[Agent-2-KN] \u274c Outside clinic hours: {hours_msg}")
+            print(f"[Agent-2-KN] ❌ Outside clinic hours: {hours_msg}")
             if "Sunday" in hours_msg:
-                response = "\u0C95\u0CCD\u0CB7\u0CAE\u0CBF\u0CB8\u0CBF, \u0CAD\u0CBE\u0CA8\u0CC1\u0CB5\u0CBE\u0CB0 \u0C95\u0CCD\u0CB2\u0CBF\u0CA8\u0CBF\u0C95\u0CCD \u0CAE\u0CC1\u0C9A\u0CCD\u0C9A\u0CBF\u0CA6\u0CC6. \u0CA6\u0CAF\u0CB5\u0CBF\u0C9F\u0CCD\u0C9F\u0CC1 \u0CAC\u0CC7\u0CB0\u0CC6 \u0CA6\u0CBF\u0CA8 \u0CB9\u0CC7\u0CB3\u0CBF."
+                response = "ಕ್ಷಮಿಸಿ, ಭಾನುವಾರ ಕ್ಲಿನಿಕ್ ಮುಚ್ಚಿದೆ. ದಯವಿಟ್ಟು ಬೇರೆ ದಿನ ಹೇಳಿ."
             else:
-                response = "\u0C95\u0CCD\u0CB7\u0CAE\u0CBF\u0CB8\u0CBF, \u0C95\u0CCD\u0CB2\u0CBF\u0CA8\u0CBF\u0C95\u0CCD \u0CB8\u0CAE\u0CAF 10 AM\u200D\u2013\u200D1 PM \u0CAE\u0CA4\u0CCD\u0CA4\u0CC1 4 PM\u200D\u2013\u200D7 PM. \u0CA6\u0CAF\u0CB5\u0CBF\u0C9F\u0CCD\u0C9F\u0CC1 \u0CAC\u0CC7\u0CB0\u0CC6 \u0CB8\u0CAE\u0CAF \u0CB9\u0CC7\u0CB3\u0CBF."
+                response = "ಕ್ಷಮಿಸಿ, ಕ್ಲಿನಿಕ್ ಸಮಯ 10 AM–1 PM ಮತ್ತು 4 PM–7 PM. ದಯವಿಟ್ಟು ಬೇರೆ ಸಮಯ ಹೇಳಿ."
             state.pop("time", None)
             state.pop("confirmation_pending", None)
             parsed = {"response": response, "action": None, "handoff": False, "done": False, "state": state}
@@ -192,11 +193,11 @@ async def run_agent2(user_text: str, memory: list, state: dict, agent1_context: 
             {"role": "user", "content": status_msg}
         ]
         state["availability_checked"] = True
-        response, state, parsed = await _run_agent2_kn("ದಯವಿಟ್ಟು ಮುಂದುವರಿಯಿರಿ.", memory_with_check, state, agent1_context, groq_client, config)
+        response, state, parsed = await _run_agent2_kn("ದಯವಿಟ್ಟು ಮುಂದುವರಿಯಿರಿ.", memory_with_check, state, agent1_context, groq_client, config, on_response_text)
     return response, state, parsed
 
-async def run_agent2_en(user_text: str, memory: list, state: dict, agent1_context: dict, config: dict = None):
-    response, state, parsed = await _run_agent2_en(user_text, memory, state, agent1_context, groq_client, config)
+async def run_agent2_en(user_text: str, memory: list, state: dict, agent1_context: dict, config: dict = None, on_response_text=None):
+    response, state, parsed = await _run_agent2_en(user_text, memory, state, agent1_context, groq_client, config, on_response_text)
 
     # Guard: LLM skipped CHECK_AVAILABILITY but all fields are filled
     if (
@@ -206,7 +207,7 @@ async def run_agent2_en(user_text: str, memory: list, state: dict, agent1_contex
         and not state.get("availability_checked")
         and not parsed.get("done")
     ):
-        print("[Agent-2-EN] \u26a0\ufe0f All fields present but CHECK_AVAILABILITY skipped \u2014 forcing it")
+        print("[Agent-2-EN] ⚠️ All fields present but CHECK_AVAILABILITY skipped — forcing it")
         parsed["action"] = "CHECK_AVAILABILITY"
 
     if parsed.get("action") == "CHECK_AVAILABILITY":
@@ -223,8 +224,11 @@ async def run_agent2_en(user_text: str, memory: list, state: dict, agent1_contex
 
         valid, hours_msg = _is_valid_clinic_slot(check_date, check_time)
         if not valid:
-            print(f"[Agent-2-EN] \u274c Outside clinic hours: {hours_msg}")
-            response = f"I'm sorry, {hours_msg} Could you suggest a different date or time?"
+            print(f"[Agent-2-EN] ❌ Outside clinic hours: {hours_msg}")
+            if "Sunday" in hours_msg:
+                response = "I'm sorry, the clinic is closed on Sundays. Could we schedule on another day?"
+            else:
+                response = "I'm sorry, the clinic is open from 10 AM to 1 PM and 4 PM to 7 PM. Could we schedule at a different time?"
             state.pop("date", None)
             state.pop("time", None)
             state.pop("confirmation_pending", None)
@@ -265,15 +269,15 @@ async def run_agent2_en(user_text: str, memory: list, state: dict, agent1_contex
         
         memory_with_check = memory + [
             {"role": "user", "content": user_text},
-            {"role": "assistant", "content": "Let me check the schedule..."},
+            {"role": "assistant", "content": "Let me check availability for that slot..."},
             {"role": "user", "content": status_msg}
         ]
         state["availability_checked"] = True
-        response, state, parsed = await _run_agent2_en("Please proceed based on the availability.", memory_with_check, state, agent1_context, groq_client, config)
+        response, state, parsed = await _run_agent2_en("Please proceed based on the availability.", memory_with_check, state, agent1_context, groq_client, config, on_response_text)
     return response, state, parsed
 
-async def run_agent3_kn(user_text: str, memory: list, state: dict, context: dict, config: dict = None):
-    response, state, parsed = await _run_agent3_kn(user_text, memory, state, context, groq_client, config)
+async def run_agent3_kn(user_text: str, memory: list, state: dict, context: dict, config: dict = None, on_response_text=None):
+    response, state, parsed = await _run_agent3_kn(user_text, memory, state, context, groq_client, config, on_response_text)
 
     # Intercept VERIFY_APPOINTMENT action
     if parsed.get("action") == "VERIFY_APPOINTMENT":
@@ -302,7 +306,7 @@ async def run_agent3_kn(user_text: str, memory: list, state: dict, context: dict
             {"role": "assistant", "content": "Let me verify your appointment..."},
             {"role": "user", "content": status_msg}
         ]
-        response, state, parsed = await _run_agent3_kn("ದಯವಿಟ್ಟು ಮುಂದುವರಿಯಿರಿ.", memory_with_verify, state, context, groq_client, config)
+        response, state, parsed = await _run_agent3_kn("ದಯವಿಟ್ಟು ಮುಂದುವರಿಯಿರಿ.", memory_with_verify, state, context, groq_client, config, on_response_text)
 
     # Intercept CHECK_AVAILABILITY action (reschedule only)
     if parsed.get("action") == "CHECK_AVAILABILITY":
@@ -325,7 +329,7 @@ async def run_agent3_kn(user_text: str, memory: list, state: dict, context: dict
             {"role": "assistant", "content": "ಲಭ್ಯತೆ ಪರಿಶೀಲಿಸುತ್ತಿದ್ದೇನೆ..."},
             {"role": "user",      "content": status_msg},
         ]
-        response, state, parsed = await _run_agent3_kn("ದಯವಿಟ್ಟು ಮುಂದುವರಿಯಿರಿ.", memory_with_avail, state, context, groq_client, config)
+        response, state, parsed = await _run_agent3_kn("ದಯವಿಟ್ಟು ಮುಂದುವರಿಯಿರಿ.", memory_with_avail, state, context, groq_client, config, on_response_text)
 
     # When confirmed, update DB
     if parsed.get("done") and parsed.get("confirmation_status") == "confirmed" and state.get("appointment_id"):
@@ -354,8 +358,8 @@ def _normalize_phone_for_lookup(phone: str) -> str:
     return phone
 
 
-async def run_agent3_en(user_text: str, memory: list, state: dict, context: dict, config: dict = None):
-    response, state, parsed = await _run_agent3_en(user_text, memory, state, context, groq_client, config)
+async def run_agent3_en(user_text: str, memory: list, state: dict, context: dict, config: dict = None, on_response_text=None):
+    response, state, parsed = await _run_agent3_en(user_text, memory, state, context, groq_client, config, on_response_text)
 
     # Intercept VERIFY_APPOINTMENT action
     if parsed.get("action") == "VERIFY_APPOINTMENT":
@@ -384,7 +388,7 @@ async def run_agent3_en(user_text: str, memory: list, state: dict, context: dict
             {"role": "assistant", "content": "Let me verify your appointment..."},
             {"role": "user", "content": status_msg}
         ]
-        response, state, parsed = await _run_agent3_en("Please proceed based on the verification result.", memory_with_verify, state, context, groq_client, config)
+        response, state, parsed = await _run_agent3_en("Please proceed based on the verification result.", memory_with_verify, state, context, groq_client, config, on_response_text)
 
     # Intercept CHECK_AVAILABILITY action (reschedule only)
     if parsed.get("action") == "CHECK_AVAILABILITY":
@@ -407,7 +411,7 @@ async def run_agent3_en(user_text: str, memory: list, state: dict, context: dict
             {"role": "assistant", "content": "Let me check availability for that slot..."},
             {"role": "user",      "content": status_msg},
         ]
-        response, state, parsed = await _run_agent3_en("Please proceed based on the availability result.", memory_with_avail, state, context, groq_client, config)
+        response, state, parsed = await _run_agent3_en("Please proceed based on the availability result.", memory_with_avail, state, context, groq_client, config, on_response_text)
 
     # When confirmed, update appointment status in database
     if parsed.get("done") and parsed.get("confirmation_status") == "confirmed":
@@ -1451,6 +1455,95 @@ async def vobiz_stream(websocket: WebSocket):
             log_str += "════════════════════════════════════════════\n"
             print(log_str)
 
+            # Initialize streaming queue and splitter
+            splitter = SentenceSplitterBuffer()
+            tts_queue = asyncio.Queue()
+            tts_total_bytes = 0
+            
+            # Latency benchmarks
+            llm_request_started = 0.0
+            first_chunk_ts = None
+            first_response_text_ts = None
+            first_tts_started_ts = None
+            first_tts_audio_ts = None
+            streamed_any = False
+
+            async def stream_sentence_to_tts(sentence: str):
+                nonlocal tts_total_bytes, first_tts_started_ts, first_tts_audio_ts
+                if not sentence or not call_active:
+                    return
+                
+                now = time.time()
+                start_ref = llm_request_started if llm_request_started > 0 else t1
+                elapsed_ms = (now - start_ref) * 1000
+                print(f"⬅️ LLM STREAM CHUNK ({elapsed_ms:.0f}ms)\n   text=\"{sentence}\"\n")
+                
+                if first_tts_started_ts is None and llm_request_started > 0:
+                    first_tts_started_ts = time.time()
+                    req_to_tts_started = (first_tts_started_ts - llm_request_started) * 1000
+                    print(f"[BENCHMARK] LLM Request ➔ First TTS request: {req_to_tts_started:.2f}ms")
+                
+                is_first_chunk = True
+                async for chunk in cartesia_tts_chunked(sentence, language=effective_lang):
+                    if not call_active:
+                        break
+                    chunk = chunk[:len(chunk) & ~1]
+                    if not chunk:
+                        continue
+                    
+                    tts_total_bytes += len(chunk)
+                    
+                    if is_first_chunk:
+                        is_first_chunk = False
+                        if first_tts_audio_ts is None and llm_request_started > 0:
+                            first_tts_audio_ts = time.time()
+                            req_to_first_audio = (first_tts_audio_ts - llm_request_started) * 1000
+                            print(f"[BENCHMARK] LLM Request ➔ First TTS audio: {req_to_first_audio:.2f}ms")
+                            
+                    out_chunk, _ = audioop.ratecv(chunk, 2, 1, 16000, 8000, None)
+                    frame = json.dumps({
+                        "event": "playAudio",
+                        "media": {
+                            "contentType": "audio/x-l16",
+                            "sampleRate": 8000,
+                            "payload": base64.b64encode(out_chunk).decode(),
+                        },
+                    })
+                    await websocket.send_text(frame)
+
+            async def play_tts_queue():
+                while True:
+                    sentence = await tts_queue.get()
+                    if sentence is None:
+                        tts_queue.task_done()
+                        break
+                    try:
+                        await stream_sentence_to_tts(sentence)
+                    except Exception as tts_e:
+                        print(f"[TTS Stream Error] {tts_e}")
+                    finally:
+                        tts_queue.task_done()
+            
+            tts_task = asyncio.create_task(play_tts_queue())
+
+            async def on_response_text(text: str):
+                nonlocal first_chunk_ts, first_response_text_ts, streamed_any
+                now = time.time()
+                streamed_any = True
+                if first_chunk_ts is None and llm_request_started > 0:
+                    first_chunk_ts = now
+                    req_to_first_chunk = (first_chunk_ts - llm_request_started) * 1000
+                    print(f"➡️ LLM STREAM START\n   delay={req_to_first_chunk:.0f}ms\n")
+                
+                clean_text = text.strip()
+                if clean_text:
+                    if first_response_text_ts is None and llm_request_started > 0:
+                        first_response_text_ts = now
+                    
+                    sentences = splitter.add(text)
+                    for sentence in sentences:
+                        await tts_queue.put(sentence)
+
             # ── Security guardrail pre-check (before any LLM call) ──────────
             _blocked, _guard_response = check_guardrails(user_text, lang=effective_lang)
             if _blocked:
@@ -1467,6 +1560,9 @@ async def vobiz_stream(websocket: WebSocket):
                             "payload": base64.b64encode(out_chunk).decode(),
                         },
                     }))
+                # Cancel/stop background TTS task
+                await tts_queue.put(None)
+                await tts_task
                 return
             # ────────────────────────────────────────────────────────────────
 
@@ -1509,10 +1605,11 @@ async def vobiz_stream(websocket: WebSocket):
                     in_agent3 = True
                     agent1_ran = True
                     print(f"[VOBIZ ROUTER] Agent-3 ({effective_lang}) | Intent: cancel_reschedule")
+                    llm_request_started = time.time()
                     if effective_lang == "en":
-                        response_text, agent3_state, parsed = await run_agent3_en(user_text, memory, agent3_state, agent1_context, config=client_cfg)
+                        response_text, agent3_state, parsed = await run_agent3_en(user_text, memory, agent3_state, agent1_context, config=client_cfg, on_response_text=on_response_text)
                     else:
-                        response_text, agent3_state, parsed = await run_agent3_kn(user_text, memory, agent3_state, agent1_context, config=client_cfg)
+                        response_text, agent3_state, parsed = await run_agent3_kn(user_text, memory, agent3_state, agent1_context, config=client_cfg, on_response_text=on_response_text)
                 elif intent == "emergency":
                     agent1_ran = True
                     parsed = agent1_parsed
@@ -1532,25 +1629,28 @@ async def vobiz_stream(websocket: WebSocket):
                     )
                 else:
                     print(f"[VOBIZ ROUTER] Agent-2 ({effective_lang}) | Intent: {intent}")
+                    llm_request_started = time.time()
                     if effective_lang == "en":
-                        response_text, _new_state, parsed = await run_agent2_en(user_text, memory, state, agent1_context, config=client_cfg)
+                        response_text, _new_state, parsed = await run_agent2_en(user_text, memory, state, agent1_context, config=client_cfg, on_response_text=on_response_text)
                     else:
-                        response_text, _new_state, parsed = await run_agent2(user_text, memory, state, agent1_context, config=client_cfg)
+                        response_text, _new_state, parsed = await run_agent2(user_text, memory, state, agent1_context, config=client_cfg, on_response_text=on_response_text)
                     if _new_state:
                         state.update(_new_state)
                     agent1_ran = True
             else:
                 if in_agent3:
                     print(f"[VOBIZ ROUTER] Agent-3 ({effective_lang}) | continuation")
+                    llm_request_started = time.time()
                     if effective_lang == "en":
-                        response_text, agent3_state, parsed = await run_agent3_en(user_text, memory, agent3_state, agent1_context, config=client_cfg)
+                        response_text, agent3_state, parsed = await run_agent3_en(user_text, memory, agent3_state, agent1_context, config=client_cfg, on_response_text=on_response_text)
                     else:
-                        response_text, agent3_state, parsed = await run_agent3_kn(user_text, memory, agent3_state, agent1_context, config=client_cfg)
+                        response_text, agent3_state, parsed = await run_agent3_kn(user_text, memory, agent3_state, agent1_context, config=client_cfg, on_response_text=on_response_text)
                 else:
+                    llm_request_started = time.time()
                     if effective_lang == "en":
-                        response_text, _new_state, parsed = await run_agent2_en(user_text, memory, state, agent1_context, config=client_cfg)
+                        response_text, _new_state, parsed = await run_agent2_en(user_text, memory, state, agent1_context, config=client_cfg, on_response_text=on_response_text)
                     else:
-                        response_text, _new_state, parsed = await run_agent2(user_text, memory, state, agent1_context, config=client_cfg)
+                        response_text, _new_state, parsed = await run_agent2(user_text, memory, state, agent1_context, config=client_cfg, on_response_text=on_response_text)
                     if _new_state:
                         state.update(_new_state)
 
@@ -1585,6 +1685,8 @@ async def vobiz_stream(websocket: WebSocket):
             }))
 
             if not call_active:
+                await tts_queue.put(None)
+                await tts_task
                 return
 
             memory.append({"role": "user", "content": user_text})
@@ -1670,33 +1772,25 @@ async def vobiz_stream(websocket: WebSocket):
                         parsed["done"] = True
                     else:
                         response_text = "\u0C95\u0CCD\u0CB7\u0CAE\u0CBF\u0CB8\u0CBF, \u0CAE\u0CA4\u0CCD\u0CA4\u0CC7\u0CAE\u0CCD\u0CAE\u0CC6 \u0CB9\u0CC7\u0CB3\u0CBF."  # ಕ್ಷಮಿಸಿ, ಮತ್ತೇಮ್ಮೆ ಹೇಳಿ.
+                    
+                    # Override enqueued / streaming audio if we fallback
+                    streamed_any = False
+                    while not tts_queue.empty():
+                        try:
+                            tts_queue.get_nowait()
+                            tts_queue.task_done()
+                        except asyncio.QueueEmpty:
+                            break
 
             t2 = time.time()
-            tts_total_bytes = 0
-
-            first_sent, remainder = _split_first_sentence(response_text)
-            tts_parts = [first_sent, remainder] if remainder else [response_text]
-
-            for tts_part in tts_parts:
-                if not tts_part or not call_active:
-                    break
-                async for chunk in cartesia_tts_chunked(tts_part, language=effective_lang):
-                    tts_total_bytes += len(chunk)
-                    if not call_active:
-                        break
-                    chunk = chunk[:len(chunk) & ~1]
-                    if not chunk:
-                        continue
-                    out_chunk, _ = audioop.ratecv(chunk, 2, 1, 16000, 8000, None)
-                    frame = json.dumps({
-                        "event": "playAudio",
-                        "media": {
-                            "contentType": "audio/x-l16",
-                            "sampleRate": 8000,
-                            "payload": base64.b64encode(out_chunk).decode(),
-                        },
-                    })
-                    await websocket.send_text(frame)
+            if not streamed_any and response_text:
+                await tts_queue.put(response_text)
+            
+            for sentence in splitter.flush():
+                await tts_queue.put(sentence)
+                
+            await tts_queue.put(None)
+            await tts_task
 
             tts_time = time.time() - t2
             total_ms = round((time.time() - pipe_t0) * 1000)

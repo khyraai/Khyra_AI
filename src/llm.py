@@ -183,6 +183,7 @@ class LLMPool:
         """
         agent_name = kwargs.pop("_agent_name", "unknown")
         client_id  = kwargs.pop("_client_id",  "default")
+        stream_mode = kwargs.get("stream", False)
 
         start   = time.time()
         retries = 0
@@ -191,35 +192,92 @@ class LLMPool:
         max_att = LLM_MAX_RETRIES * len(self._keys)
 
         for attempt in range(max_att):
+            sem_acquired = False
             try:
-                async with self._sems[ki]:
-                    result = await self._clients[ki].chat.completions.create(**kwargs)
+                await self._sems[ki].acquire()
+                sem_acquired = True
+                result = await self._clients[ki].chat.completions.create(**kwargs)
 
-                latency_ms = (time.time() - start) * 1000
-                usage = getattr(result, "usage", None)
-                inp   = int(getattr(usage, "prompt_tokens",     0) or 0)
-                out   = int(getattr(usage, "completion_tokens", 0) or 0)
-                cost  = (inp / 1_000_000) * _COST_INPUT_PER_1M + (out / 1_000_000) * _COST_OUTPUT_PER_1M
+                if not stream_mode:
+                    self._sems[ki].release()
+                    sem_acquired = False
 
-                _record({
-                    "success":         True,
-                    "key_index":       ki,
-                    "retry_count":     retries,
-                    "rate_limit_hits": rl_hits,
-                    "latency_ms":      round(latency_ms, 2),
-                    "input_tokens":    inp,
-                    "output_tokens":   out,
-                    "cost_usd":        round(cost, 8),
-                    "agent":           agent_name,
-                    "client_id":       client_id,
-                    "ts":              round(time.time(), 3),
-                })
-                return result
+                    latency_ms = (time.time() - start) * 1000
+                    usage = getattr(result, "usage", None)
+                    inp   = int(getattr(usage, "prompt_tokens",     0) or 0)
+                    out   = int(getattr(usage, "completion_tokens", 0) or 0)
+                    cost  = (inp / 1_000_000) * _COST_INPUT_PER_1M + (out / 1_000_000) * _COST_OUTPUT_PER_1M
+
+                    _record({
+                        "success":         True,
+                        "key_index":       ki,
+                        "retry_count":     retries,
+                        "rate_limit_hits": rl_hits,
+                        "latency_ms":      round(latency_ms, 2),
+                        "input_tokens":    inp,
+                        "output_tokens":   out,
+                        "cost_usd":        round(cost, 8),
+                        "agent":           agent_name,
+                        "client_id":       client_id,
+                        "ts":              round(time.time(), 3),
+                    })
+                    return result
+                else:
+                    # Stream mode: Return an async generator.
+                    # Hold the semaphore for the entire duration of the stream.
+                    async def stream_generator(client_idx, acquired_sem):
+                        nonlocal retries, rl_hits
+                        start_time = time.time()
+                        total_out_chars = 0
+                        usage = None
+                        success = False
+                        try:
+                            async for chunk in result:
+                                if hasattr(chunk, "usage") and chunk.usage:
+                                    usage = chunk.usage
+                                if chunk.choices:
+                                    delta_content = chunk.choices[0].delta.content or ""
+                                    total_out_chars += len(delta_content)
+                                yield chunk
+                            success = True
+                        except Exception as stream_exc:
+                            print(f"[LLM Pool] Stream error on key[{client_idx}]: {stream_exc}")
+                            raise stream_exc
+                        finally:
+                            acquired_sem.release()
+                            latency_ms = (time.time() - start_time) * 1000
+                            if usage:
+                                inp = int(getattr(usage, "prompt_tokens", 0) or 0)
+                                out = int(getattr(usage, "completion_tokens", 0) or 0)
+                            else:
+                                inp = 0
+                                out = int(total_out_chars / 4)
+                            cost  = (inp / 1_000_000) * _COST_INPUT_PER_1M + (out / 1_000_000) * _COST_OUTPUT_PER_1M
+                            _record({
+                                "success":         success,
+                                "key_index":       client_idx,
+                                "retry_count":     retries,
+                                "rate_limit_hits": rl_hits,
+                                "latency_ms":      round(latency_ms, 2),
+                                "input_tokens":    inp,
+                                "output_tokens":   out,
+                                "cost_usd":        round(cost, 8),
+                                "agent":           agent_name,
+                                "client_id":       client_id,
+                                "ts":              round(time.time(), 3),
+                            })
+                    
+                    return stream_generator(ki, self._sems[ki])
 
             except asyncio.CancelledError:
+                if sem_acquired:
+                    self._sems[ki].release()
                 raise  # let asyncio.wait_for propagate — agents handle TimeoutError
 
             except Exception as exc:
+                if sem_acquired:
+                    self._sems[ki].release()
+                    sem_acquired = False
                 err = str(exc).lower()
                 is_rl = "429" in err or "rate limit" in err or "rate_limit" in err
 

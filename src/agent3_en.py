@@ -12,7 +12,7 @@ Does NOT handle new appointment booking. Routing is controlled by main.py.
 """
 
 import asyncio
-from utils import parse_llm_json
+from utils import parse_llm_json, IncrementalResponseExtractor
 from llm import LLM_MODEL
 
 
@@ -224,6 +224,7 @@ async def run_agent3_en(
     context: dict,
     groq_client,
     config: dict = None,
+    on_response_text=None,
 ) -> tuple:
     """
     Runs English Agent-3 for cancel/reschedule flows.
@@ -240,11 +241,20 @@ async def run_agent3_en(
                 response_format={"type": "json_object"},
                 max_tokens=600,
                 temperature=0.2,
-                stream=False,
+                stream=True,
             ),
             timeout=15,
         )
-        full_response = chat_completion.choices[0].message.content
+        full_response = ""
+        extractor = IncrementalResponseExtractor()
+        async for chunk in chat_completion:
+            if chunk.choices:
+                delta = chunk.choices[0].delta.content or ""
+                full_response += delta
+                if on_response_text:
+                    new_text = extractor.feed(delta)
+                    if new_text:
+                        await on_response_text(new_text)
         print(f"[AGENT-3-EN] RAW: {full_response}")
     except asyncio.TimeoutError:
         print("[AGENT-3-EN] TIMEOUT")

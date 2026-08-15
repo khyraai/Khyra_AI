@@ -10,7 +10,7 @@ Routing is controlled by main.py based on session_language, NOT inside this modu
 """
 
 import asyncio
-from utils import parse_llm_json
+from utils import parse_llm_json, IncrementalResponseExtractor
 from llm import LLM_MODEL
 
 
@@ -325,7 +325,15 @@ CURRENT STATE:
 # -----------------------------------------------------------------------
 # Runner
 # -----------------------------------------------------------------------
-async def run_agent2_en(user_text: str, memory: list, state: dict, agent1_context: dict, groq_client, config: dict = None) -> tuple:
+async def run_agent2_en(
+    user_text: str,
+    memory: list,
+    state: dict,
+    agent1_context: dict,
+    groq_client,
+    config: dict = None,
+    on_response_text=None,
+) -> tuple:
     """Runs English Agent-2 for the main conversational response."""
     system_prompt = build_agent2_en_prompt(config=config, state=state, agent1_context=agent1_context)
     messages = [{"role": "system", "content": system_prompt}] + memory + [{"role": "user", "content": user_text}]
@@ -337,11 +345,20 @@ async def run_agent2_en(user_text: str, memory: list, state: dict, agent1_contex
                 response_format={"type": "json_object"},
                 max_tokens=600,
                 temperature=0.3,
-                stream=False
+                stream=True
             ),
             timeout=15
         )
-        full_response = chat_completion.choices[0].message.content
+        full_response = ""
+        extractor = IncrementalResponseExtractor()
+        async for chunk in chat_completion:
+            if chunk.choices:
+                delta = chunk.choices[0].delta.content or ""
+                full_response += delta
+                if on_response_text:
+                    new_text = extractor.feed(delta)
+                    if new_text:
+                        await on_response_text(new_text)
         print(f"[AGENT-2-EN] RAW: {full_response}")
     except asyncio.TimeoutError:
         print("[AGENT-2-EN] TIMEOUT")

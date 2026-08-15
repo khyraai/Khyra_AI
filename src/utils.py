@@ -429,3 +429,238 @@ def send_to_n8n_webhook_sync(payload: dict) -> bool:
         print(f"❌ [N8N] Request error: {e}")
         return False
 
+
+# -----------------------------------------------------------------------
+# Incremental JSON Parser & Extractor
+# -----------------------------------------------------------------------
+class IncrementalResponseExtractor:
+    """
+    State-machine JSON stream parser to extract characters of the "response"
+    value incrementally as they arrive.
+    """
+    def __init__(self):
+        self.full_json_buffer = ""
+        self.response_buffer = ""
+        self.emitted_idx = 0
+        
+        # States: WAIT_KEY, IN_KEY, WAIT_COLON, WAIT_VAL, IN_RESPONSE, 
+        #         SKIP_STRING, SKIP_OBJECT, SKIP_OBJ_STR, SKIP_ARRAY, SKIP_ARR_STR, SKIP_PRIMITIVE, DONE
+        self.state = "WAIT_KEY"
+        self.current_key = ""
+        self.escape = False
+        self.in_unicode = False
+        self.unicode_buf = ""
+        
+        # Nesting counters for skipping
+        self.brace_count = 0
+        self.bracket_count = 0
+
+    def feed(self, chunk: str) -> str:
+        """
+        Feeds a chunk of text from the stream, updates internal state,
+        and returns any newly available response text.
+        """
+        self.full_json_buffer += chunk
+        new_text = ""
+        
+        for char in chunk:
+            if self.state == "DONE":
+                continue
+                
+            # If we are in unicode escape sequence collection
+            if self.in_unicode:
+                self.unicode_buf += char
+                if len(self.unicode_buf) == 4:
+                    try:
+                        unicode_char = chr(int(self.unicode_buf, 16))
+                        if self.state == "IN_RESPONSE":
+                            self.response_buffer += unicode_char
+                    except Exception:
+                        if self.state == "IN_RESPONSE":
+                            self.response_buffer += f"\\u{self.unicode_buf}"
+                    self.in_unicode = False
+                    self.unicode_buf = ""
+                continue
+
+            # If the current character is escaped
+            if self.escape:
+                if self.state == "IN_RESPONSE":
+                    if char == 'n':
+                        self.response_buffer += '\n'
+                    elif char == 't':
+                        self.response_buffer += '\t'
+                    elif char == 'r':
+                        self.response_buffer += '\r'
+                    elif char == 'b':
+                        self.response_buffer += '\b'
+                    elif char == 'f':
+                        self.response_buffer += '\f'
+                    elif char == 'u':
+                        self.in_unicode = True
+                        self.unicode_buf = ""
+                    else:
+                        self.response_buffer += char
+                elif self.state in ("SKIP_STRING", "SKIP_OBJ_STR", "SKIP_ARR_STR"):
+                    if char == 'u':
+                        self.in_unicode = True
+                        self.unicode_buf = ""
+                self.escape = False
+                continue
+
+            # Check for escape character start
+            if char == '\\':
+                self.escape = True
+                continue
+
+            # Normal character processing based on state
+            if self.state == "WAIT_KEY":
+                if char == '"':
+                    self.state = "IN_KEY"
+                    self.current_key = ""
+
+            elif self.state == "IN_KEY":
+                if char == '"':
+                    self.state = "WAIT_COLON"
+                else:
+                    self.current_key += char
+
+            elif self.state == "WAIT_COLON":
+                if char == ':':
+                    self.state = "WAIT_VAL"
+
+            elif self.state == "WAIT_VAL":
+                if char.isspace():
+                    continue
+                
+                # Check if it's the response key we want
+                if self.current_key == "response":
+                    if char == '"':
+                        self.state = "IN_RESPONSE"
+                    else:
+                        self.state = "SKIP_PRIMITIVE"
+                else:
+                    # We want to skip this value
+                    if char == '"':
+                        self.state = "SKIP_STRING"
+                    elif char == '{':
+                        self.state = "SKIP_OBJECT"
+                        self.brace_count = 1
+                    elif char == '[':
+                        self.state = "SKIP_ARRAY"
+                        self.bracket_count = 1
+                    else:
+                        self.state = "SKIP_PRIMITIVE"
+
+            elif self.state == "IN_RESPONSE":
+                if char == '"':
+                    self.state = "DONE"
+                else:
+                    self.response_buffer += char
+
+            elif self.state == "SKIP_STRING":
+                if char == '"':
+                    self.state = "WAIT_KEY"
+
+            elif self.state == "SKIP_OBJECT":
+                if char == '"':
+                    self.state = "SKIP_OBJ_STR"
+                elif char == '{':
+                    self.brace_count += 1
+                elif char == '}':
+                    self.brace_count -= 1
+                    if self.brace_count == 0:
+                        self.state = "WAIT_KEY"
+
+            elif self.state == "SKIP_OBJ_STR":
+                if char == '"':
+                    self.state = "SKIP_OBJECT"
+
+            elif self.state == "SKIP_ARRAY":
+                if char == '"':
+                    self.state = "SKIP_ARR_STR"
+                elif char == '[':
+                    self.bracket_count += 1
+                elif char == ']':
+                    self.bracket_count -= 1
+                    if self.bracket_count == 0:
+                        self.state = "WAIT_KEY"
+
+            elif self.state == "SKIP_ARR_STR":
+                if char == '"':
+                    self.state = "SKIP_ARRAY"
+
+            elif self.state == "SKIP_PRIMITIVE":
+                if char == ',':
+                    self.state = "WAIT_KEY"
+                elif char == '}':
+                    self.state = "WAIT_KEY"
+
+        # Emit any new characters of the response buffer
+        if len(self.response_buffer) > self.emitted_idx:
+            new_text = self.response_buffer[self.emitted_idx:]
+            self.emitted_idx = len(self.response_buffer)
+            
+        return new_text
+
+
+# -----------------------------------------------------------------------
+# Sentence Splitter Buffer
+# -----------------------------------------------------------------------
+class SentenceSplitterBuffer:
+    """
+    Buffers characters/substrings and splits them into complete sentences
+    for pipeline TTS transmission.
+    """
+    def __init__(self, min_length=15):
+        self.buffer = ""
+        self.min_length = min_length
+        self._ABBREVS = {"dr", "mr", "mrs", "ms", "prof", "sr", "jr", "st", "no", "vs"}
+
+    def add(self, text: str) -> list[str]:
+        """
+        Adds text to the buffer and returns any completed sentences/phrases.
+        """
+        self.buffer += text
+        chunks = []
+        
+        while True:
+            boundary_idx = -1
+            for i, ch in enumerate(self.buffer):
+                if ch in ".!?\n":
+                    if ch == ".":
+                        # Skip decimals: digit.digit
+                        if i > 0 and i < len(self.buffer) - 1 and self.buffer[i-1].isdigit() and self.buffer[i+1].isdigit():
+                            continue
+                        # Skip abbreviations: short word before dot
+                        word_start = i - 1
+                        while word_start >= 0 and self.buffer[word_start].isalpha():
+                            word_start -= 1
+                        word = self.buffer[word_start+1:i].lower()
+                        if word in self._ABBREVS:
+                            continue
+                    
+                    candidate = self.buffer[:i+1].strip()
+                    if len(candidate) >= self.min_length or "\n" in candidate:
+                        boundary_idx = i
+                        break
+            
+            if boundary_idx != -1:
+                first = self.buffer[:boundary_idx+1].strip()
+                chunks.append(first)
+                self.buffer = self.buffer[boundary_idx+1:]
+            else:
+                break
+                
+        return chunks
+
+    def flush(self) -> list[str]:
+        """
+        Flushes the remaining buffer.
+        """
+        remaining = self.buffer.strip()
+        self.buffer = ""
+        if remaining:
+            return [remaining]
+        return []
+
+
