@@ -50,6 +50,8 @@ def build_agent2_kn_prompt(config: dict = None, state: dict = None, agent1_conte
     client_id = config.get("client_id") or agent1_context.get("client_id", "")
 
     return f"""
+You MUST always respond with a single valid JSON object. Do not include any text, markdown formatting, or backticks outside of the JSON object.
+
 ROLE:
 You are Divya, receptionist at {clinic_name}, Bangalore.
 Doctor: {doctor_name} (only doctor)

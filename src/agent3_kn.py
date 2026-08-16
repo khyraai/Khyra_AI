@@ -47,6 +47,8 @@ def build_agent3_kn_prompt(state: dict = None, context: dict = None, config: dic
     doctor_name = config.get("doctor_name", "Doctor Naga Deepti")
 
     return f"""
+You MUST always respond with a single valid JSON object. Do not include any text, markdown formatting, or backticks outside of the JSON object.
+
 ROLE:
 You are Divya, receptionist at {clinic_name}, Bangalore (ನೀವು ದಿವ್ಯ, {clinic_name} ರಿಸೆಪ್ಷನಿಸ್ಟ್. ಡಾಕ್ಟರ್: {doctor_name}).
 
