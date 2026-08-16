@@ -608,12 +608,19 @@ class IncrementalResponseExtractor:
 # -----------------------------------------------------------------------
 class SentenceSplitterBuffer:
     """
-    Buffers characters/substrings and splits them into complete sentences
+    Buffers characters/substrings and splits them into complete sentences or natural phrases
     for pipeline TTS transmission.
+
+    Splitting Rules:
+    1. Hard endings (. ! ? \n) — split immediately (respecting abbreviation/decimal guards).
+    2. Clause boundaries (, ; :) — split when candidate length >= 25 characters (~5-6 words).
+    3. Length/Word fallback — if buffer exceeds max_unsplit_length (default 40 chars / ~7-8 words)
+       without punctuation, split at the nearest space boundary.
     """
-    def __init__(self, min_length=15):
+    def __init__(self, min_length=15, max_unsplit_length=40):
         self.buffer = ""
         self.min_length = min_length
+        self.max_unsplit_length = max_unsplit_length
         self._ABBREVS = {"dr", "mr", "mrs", "ms", "prof", "sr", "jr", "st", "no", "vs"}
 
     def add(self, text: str) -> list[str]:
@@ -644,10 +651,18 @@ class SentenceSplitterBuffer:
                     if is_hard or (len(candidate) >= 25):
                         boundary_idx = i
                         break
+
+            # If no punctuation boundary found, check if buffer exceeds max_unsplit_length
+            if boundary_idx == -1 and len(self.buffer) >= self.max_unsplit_length:
+                # Find the last space within max_unsplit_length window
+                space_idx = self.buffer.rfind(" ", 15, self.max_unsplit_length + 10)
+                if space_idx != -1:
+                    boundary_idx = space_idx
             
             if boundary_idx != -1:
                 first = self.buffer[:boundary_idx+1].strip()
-                chunks.append(first)
+                if first:
+                    chunks.append(first)
                 self.buffer = self.buffer[boundary_idx+1:]
             else:
                 break
