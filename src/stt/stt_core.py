@@ -277,6 +277,8 @@ async def _get_http_session() -> aiohttp.ClientSession:
             limit=int(os.getenv("STT_HTTP_POOL_LIMIT", "50")),
             limit_per_host=int(os.getenv("STT_HTTP_POOL_PER_HOST", "20")),
             ttl_dns_cache=300,
+            keepalive_timeout=60,
+            enable_cleanup_closed=True,
         )
         timeout = aiohttp.ClientTimeout(total=_REQUEST_TIMEOUT_SEC)
         _HTTP_SESSION = aiohttp.ClientSession(connector=connector, timeout=timeout)

@@ -98,10 +98,11 @@ Client: {client_id}
 CONSTRAINTS & RULES:
 
 ENQUIRY BEHAVIOR:
-- If the question is SPECIFIC (timings, location, fees, doctor info), answer ONLY that question clearly, concisely, and in a complete natural sentence.
-- ALWAYS speak in complete, natural, conversational sentences. Never output telegraphic fragments, bullet points, or staccato lists (e.g. NEVER say "Madhura Colony. Mon-Sat 10-1. Dental services. Doctor Naga Deepti."). Connect multi-part answers smoothly into complete spoken sentences (e.g. "We are located at Madhura Colony, Keshwapur, Hubballi. Our clinic is open Monday to Saturday from 10 AM to 1 PM and 4 PM to 7 PM, and Doctor Naga Deepti provides all general dental services.").
-- If VAGUE or GENERAL (e.g. "I want to inquire about the clinic", "Tell me about the clinic"), ask a short clarifying question like: "Sure, what would you like to know?" or "Sure, how can I help you with that?"
-- If the user's message contains "inquire", "inquiry", "ask about", or "know about" — even if garbled by STT — treat as a VAGUE CLINIC ENQUIRY and ask: "Sure, what would you like to know?"
+- VOICE CONCISENESS RULE: Keep all spoken responses concise, punchy, and under 25 words (max 1-2 short sentences). Never dump full address, all timings, and full service lists in a single turn. Answer only what was specifically asked in 1-2 short sentences so audio synthesizes instantly.
+- If the question is SPECIFIC (timings, location, fees, doctor info, services), answer requested details clearly, concisely, and in complete natural sentences.
+- IF SPECIFIC TOPICS (address, timing, doctor, services, fees, location) ARE MENTIONED — even if alongside phrases like "tell me about", "inquire", or "ask about" — answer mentioned items using CLINIC INFO. Do NOT ask a vague clarifying question when specific topics are present.
+- ALWAYS speak in complete, natural, conversational sentences. Never output telegraphic fragments, bullet points, or staccato lists. Connect answers smoothly into short spoken sentences.
+- Only if the request is purely VAGUE or GENERAL with NO specific topic mentioned (e.g. "I want to inquire", "Tell me about the clinic"), ask a short clarifying question like: "Sure, what would you like to know?"
 - If the user asks what you can do (e.g. "What can you help with?"), list options in a natural sentence: "I can help with our timings, location, fees, or appointments. What do you need?"
 - If you have already replied once that you can only help with appointments and enquiries, and the user persists, STOP repeating the refusal. Instead ask: "Could you clarify what you'd like to know? I can help with our timings, location, fees, or appointments."
 - Do NOT ask for their name during general enquiries.
@@ -195,7 +196,7 @@ GENERAL HARD CONSTRAINTS:
 - Output MUST strictly follow the JSON schema shown below.
 - NEVER output extra text outside the JSON.
 - Do NOT include reasoning steps, analysis, or explanations.
-- The "response" field MUST NOT exceed 20 words. Be brief and direct.
+- The "response" field MUST be brief and direct (ideally under 25 words for single questions, up to 45 words when answering multi-topic queries like address + timings + doctor + services together).
 - The JSON "state" values (name, reason, etc.) MUST be in English. NEVER store non-English text in state. The "response" field MUST ALWAYS be in English.
 - Store "general consultation" or "Janaral Konsalteyshan" exactly as "consultation".
 - CRITICAL: ALWAYS return a SINGLE JSON object {{...}}. NEVER return a JSON array [...] or multiple objects.
@@ -234,9 +235,9 @@ Output: {{"response": "I'm sorry, I can only assist in English for this call.", 
 User: "I wanted to inquire about something" / "I want to ask about the appoint"
 Output: {{"response": "Sure, what would you like to know?", "intent": "enquiry", "action": null, "handoff": false, "state": {{}}, "done": false}}
 
--- Multi-part question → single combined response (NEVER return an array) --
-User: "Can you tell me one about your services, two about the clinic, and three about the timing?"
-Output: {{"response": "We offer dental services. We're at {address}. Open Mon-Sat, 10 AM-1 PM and 4-7 PM.", "intent": "enquiry", "action": null, "handoff": false, "state": {{}}, "done": false}}
+-- Multi-part clinic enquiry → single combined natural response answering all requested items --
+User: "Can you tell me about your clinic address, timing, who is the doctor and all the services that you provide?"
+Output: {{"response": "{doctor_name} provides all general dental services at {address}. Our clinic is open Monday to Saturday from 10 AM to 1 PM and 4 PM to 7 PM, closed on Sundays.", "intent": "enquiry", "action": null, "handoff": false, "state": {{}}, "done": false}}
 
 -- Enquiry to appointment --
 User: "I'd like to book an appointment for tomorrow."
@@ -369,9 +370,29 @@ async def run_agent2_en(
         parsed = parse_llm_json('{"response": "Sorry, that took too long. Could you please repeat that?", "state": {}, "handoff": false, "done": false}')
         return parsed.get("response", "Sorry, please repeat that."), state, parsed
     except Exception as e:
-        print(f"[AGENT-2-EN] Error: {e}")
-        parsed = parse_llm_json('{"response": "Sorry, could you please repeat that?", "state": {}, "handoff": false, "done": false}')
-        return parsed.get("response", "Sorry, please repeat that."), state, parsed
+        print(f"[AGENT-2-EN] Stream Error: {e} — Attempting non-streaming fallback...")
+        try:
+            non_stream_resp = await asyncio.wait_for(
+                groq_client.chat.completions.create(
+                    model=LLM_MODEL,
+                    messages=messages,
+                    response_format={"type": "json_object"},
+                    max_tokens=600,
+                    temperature=0.3,
+                    stream=False,
+                ),
+                timeout=10,
+            )
+            full_response = non_stream_resp.choices[0].message.content or ""
+            print(f"[AGENT-2-EN] RAW (non-stream fallback): {full_response}")
+            parsed = parse_llm_json(full_response)
+            fallback_text = parsed.get("response", "")
+            if fallback_text and on_response_text:
+                await on_response_text(fallback_text)
+        except Exception as fallback_err:
+            print(f"[AGENT-2-EN] Fallback Error: {fallback_err}")
+            parsed = parse_llm_json('{"response": "Sorry, could you please repeat that?", "state": {}, "handoff": false, "done": false}')
+            return parsed.get("response", "Sorry, please repeat that."), state, parsed
 
     parsed = parse_llm_json(full_response)
     new_state = parsed.get("state", {})

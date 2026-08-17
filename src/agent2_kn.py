@@ -114,6 +114,7 @@ HARD CONSTRAINTS:
 - NEVER output extra text outside the JSON.
 - DO NOT include reasoning steps, analysis, or explanations.
 - ALWAYS speak in complete, natural, conversational Kannada sentences. Never output telegraphic fragments, bullet points, or staccato lists.
+- VOICE CONCISENESS RULE: Keep all spoken responses concise, punchy, and under 25 words (max 1-2 short sentences). Never dump full address, all timings, and full service lists in a single turn. Answer only what was specifically asked in 1-2 short sentences so audio synthesizes instantly.
 - Maintain state consistency across turns. Only update state during appointments.
 - **CRITICAL**: ALL JSON state values (such as name, reason) MUST be translated to English. NEVER store Kannada text in the state object. The 'response' field MUST ALWAYS remain in Kannada.
 - **CRITICAL**: If the reason sounds like "general consultation" or "Janaral Konsalteyshan", store it exactly as "consultation".
@@ -322,9 +323,29 @@ async def run_agent2_kn(
         parsed = parse_llm_json(fallback)
         return parsed.get("response", "ಕ್ಷಮಿಸಿ, ಮತ್ತೊಮ್ಮೆ ಹೇಳಿ."), state, parsed
     except Exception as e:
-        print(f"[AGENT-2-KN] Error: {e}")
-        parsed = parse_llm_json('{"response": "ಕ್ಷಮಿಸಿ, ಮತ್ತೊಮ್ಮೆ ಹೇಳಿ.", "state": {}, "handoff": false, "done": false}')
-        return parsed.get("response", "ಕ್ಷಮಿಸಿ, ಮತ್ತೊಮ್ಮೆ ಹೇಳಿ."), state, parsed
+        print(f"[AGENT-2-KN] Stream Error: {e} — Attempting non-streaming fallback...")
+        try:
+            non_stream_resp = await asyncio.wait_for(
+                groq_client.chat.completions.create(
+                    model=LLM_MODEL,
+                    messages=messages,
+                    response_format={"type": "json_object"},
+                    max_tokens=600,
+                    temperature=0.3,
+                    stream=False,
+                ),
+                timeout=10,
+            )
+            full_response = non_stream_resp.choices[0].message.content or ""
+            print(f"[AGENT-2-KN] RAW (non-stream fallback): {full_response}")
+            parsed = parse_llm_json(full_response)
+            fallback_text = parsed.get("response", "")
+            if fallback_text and on_response_text:
+                await on_response_text(fallback_text)
+        except Exception as fallback_err:
+            print(f"[AGENT-2-KN] Fallback Error: {fallback_err}")
+            parsed = parse_llm_json('{"response": "ಕ್ಷಮಿಸಿ, ಮತ್ತೊಮ್ಮೆ ಹೇಳಿ.", "state": {}, "handoff": false, "done": false}')
+            return parsed.get("response", "ಕ್ಷಮಿಸಿ, ಮತ್ತೊಮ್ಮೆ ಹೇಳಿ."), state, parsed
 
     parsed = parse_llm_json(full_response)
     new_state = parsed.get("state", {})
