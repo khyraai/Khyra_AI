@@ -1298,7 +1298,7 @@ async def vobiz_stream(websocket: WebSocket):
         frame_ms=20,
         start_trigger_ms=60,
         min_speech_ms=350,
-        silence_end_ms=800,
+        silence_end_ms=600,
         target_chunk_ms=1200,
         max_chunk_ms=10000,
         short_utt_min_ms=250,
@@ -1795,8 +1795,8 @@ async def vobiz_stream(websocket: WebSocket):
             memory.append({"role": "assistant", "content": response_text})
             transcript_log.append({"speaker": "user", "text": user_text})
             transcript_log.append({"speaker": "bot",  "text": response_text})
-            if len(memory) > 18:
-                memory = memory[-18:]
+            if len(memory) > 12:
+                memory = memory[-12:]
 
             # ── Agent-2: new appointment ──────────────────────────────────
             if (

@@ -281,6 +281,20 @@ class LLMPool:
                 err = str(exc).lower()
                 is_rl = "429" in err or "rate limit" in err or "rate_limit" in err
 
+                # json_validate_failed is a model-output error — the LLM produced plain
+                # text instead of a valid JSON object.  Rotating API keys CANNOT fix this;
+                # retrying on every key wastes 7-10 seconds.  Break immediately so the
+                # agent-level fallback (temperature=0.0 + explicit JSON hint) can take over.
+                is_json_fail = (
+                    "json_validate_failed" in err
+                    or "failed_generation" in err
+                    or ("invalid_request_error" in err and "json" in err)
+                )
+                if is_json_fail:
+                    print(f"[LLM Pool] [JSON_FAIL] Non-retryable JSON validation error on key[{ki}] — breaking retry loop immediately")
+                    # Re-raise so the caller's except block can implement a smarter recovery
+                    raise exc
+
                 if is_rl:
                     rl_hits += 1
                     print(f"[LLM Pool] [429] rate-limit on key[{ki}] | type={type(exc).__name__} | {exc}")

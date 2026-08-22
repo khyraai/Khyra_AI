@@ -101,6 +101,7 @@ HARD CONSTRAINTS:
 - NEVER output extra text outside the JSON.
 - DO NOT include reasoning steps, analysis, or explanations.
 - The "response" field MUST NOT exceed 20 words. Be brief and direct.
+- ADDRESS RULE: NEVER read the full postal address aloud — it sounds robotic and takes too long. Instead, mention ONLY the area/landmark (e.g. "We're in BTM Layout, Bengaluru — near MCHS Colony"). If the caller needs the exact address, say "I can share the full address over SMS or Google Maps — would that help?"
 - Maintain state consistency across turns.
 - Always resolve relative dates like "tomorrow" to absolute YYYY-MM-DD HH:MM format in the state.
 - **CRITICAL**: ALL JSON state values (such as name, reason) MUST be in English. NEVER store non-English text in the state object. The 'response' field MUST ALWAYS remain in English.
@@ -263,6 +264,45 @@ async def run_agent3_en(
         parsed = parse_llm_json('{"response": "Sorry for the delay. Could you please repeat that?", "state": {}, "handoff": false, "done": false, "event_type": "appointment_cancel", "confirmation_status": "unclear"}')
         return parsed.get("response", "Sorry, please repeat that."), state, parsed
     except Exception as e:
+        err_str = str(e).lower()
+        is_json_fail = (
+            "json_validate_failed" in err_str
+            or "failed_generation" in err_str
+            or ("invalid_request_error" in err_str and "json" in err_str)
+        )
+
+        if is_json_fail:
+            print(f"[AGENT-3-EN] JSON_FAIL — fast retry at temperature=0.0 with explicit JSON hint")
+            try:
+                retry_messages = messages[:-1] + [{
+                    "role": "user",
+                    "content": messages[-1]["content"] + "\n\n[SYSTEM REMINDER: Your ENTIRE response must be a single valid JSON object starting with { and ending with }. Do NOT output any text outside the JSON.]"
+                }]
+                non_stream_resp = await asyncio.wait_for(
+                    groq_client.chat.completions.create(
+                        model=LLM_MODEL,
+                        messages=retry_messages,
+                        response_format={"type": "json_object"},
+                        max_tokens=600,
+                        temperature=0.0,
+                        stream=False,
+                    ),
+                    timeout=8,
+                )
+                full_response = non_stream_resp.choices[0].message.content or ""
+                print(f"[AGENT-3-EN] RAW (json-fail retry): {full_response}")
+                parsed = parse_llm_json(full_response)
+                fallback_text = parsed.get("response", "")
+                if fallback_text and on_response_text:
+                    await on_response_text(fallback_text)
+                _merge_state(state, parsed.get("state", {}))
+                return parsed.get("response", "Okay."), state, parsed
+            except Exception as retry_err:
+                print(f"[AGENT-3-EN] JSON-fail retry also failed: {retry_err}")
+                parsed = parse_llm_json('{"response": "One moment, could you say that once more?", "state": {}, "handoff": false, "done": false, "event_type": "appointment_cancel", "confirmation_status": "unclear"}')
+                return parsed.get("response", "One moment, could you say that once more?"), state, parsed
+
+        # ── All other errors ──
         print(f"[AGENT-3-EN] Error: {e}")
         parsed = parse_llm_json('{"response": "Sorry, could you please repeat that?", "state": {}, "handoff": false, "done": false, "event_type": "appointment_cancel", "confirmation_status": "unclear"}')
         return parsed.get("response", "Sorry, please repeat that."), state, parsed

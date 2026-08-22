@@ -115,6 +115,7 @@ HARD CONSTRAINTS:
 - DO NOT include reasoning steps, analysis, or explanations.
 - ALWAYS speak in complete, natural, conversational Kannada sentences. Never output telegraphic fragments, bullet points, or staccato lists.
 - VOICE CONCISENESS RULE: Keep all spoken responses concise, punchy, and under 25 words (max 1-2 short sentences). Never dump full address, all timings, and full service lists in a single turn. Answer only what was specifically asked in 1-2 short sentences so audio synthesizes instantly.
+- ADDRESS RULE: NEVER read the full postal address aloud — it sounds robotic and takes too long. Instead, mention ONLY the area/landmark in Kannada (e.g. "ನಾವು ಹೊಸಕೆರೆಹಳ್ಳಿಯಲ್ಲಿದ್ದೀವಿ — ಪಿಇಎಸ್ ಕಾಲೇಜು ಹತ್ತಿರ"). If the caller needs the exact address, say "ನಾನು ಪೂರ್ತಿ ವಿಳಾಸವನ್ನು SMS ಅಥವಾ ಗೂಗಲ್ ಮ್ಯಾಪ್ಸ್ ಮೂಲಕ ಕಳುಹಿಸುತ್ತೇನೆ — ಆಗಬಹುದಾ?"
 - Maintain state consistency across turns. Only update state during appointments.
 - **CRITICAL**: ALL JSON state values (such as name, reason) MUST be translated to English. NEVER store Kannada text in the state object. The 'response' field MUST ALWAYS remain in Kannada.
 - **CRITICAL**: If the reason sounds like "general consultation" or "Janaral Konsalteyshan", store it exactly as "consultation".
@@ -323,6 +324,64 @@ async def run_agent2_kn(
         parsed = parse_llm_json(fallback)
         return parsed.get("response", "ಕ್ಷಮಿಸಿ, ಮತ್ತೊಮ್ಮೆ ಹೇಳಿ."), state, parsed
     except Exception as e:
+        err_str = str(e).lower()
+        is_json_fail = (
+            "json_validate_failed" in err_str
+            or "failed_generation" in err_str
+            or ("invalid_request_error" in err_str and "json" in err_str)
+        )
+
+        if is_json_fail:
+            # The model produced plain text instead of valid JSON.
+            # Retry ONCE at temperature=0.0 with explicit JSON instruction injected.
+            print(f"[AGENT-2-KN] JSON_FAIL — fast retry at temperature=0.0 with explicit JSON hint")
+            try:
+                retry_messages = messages[:-1] + [{
+                    "role": "user",
+                    "content": messages[-1]["content"] + "\n\n[SYSTEM REMINDER: Your ENTIRE response must be a single valid JSON object starting with { and ending with }. Do NOT output any text outside the JSON.]"
+                }]
+                non_stream_resp = await asyncio.wait_for(
+                    groq_client.chat.completions.create(
+                        model=LLM_MODEL,
+                        messages=retry_messages,
+                        response_format={"type": "json_object"},
+                        max_tokens=600,
+                        temperature=0.0,
+                        stream=False,
+                    ),
+                    timeout=8,
+                )
+                full_response = non_stream_resp.choices[0].message.content or ""
+                print(f"[AGENT-2-KN] RAW (json-fail retry): {full_response}")
+                parsed = parse_llm_json(full_response)
+                fallback_text = parsed.get("response", "")
+                if fallback_text and on_response_text:
+                    await on_response_text(fallback_text)
+                # State merge using the same logic as the normal path below
+                new_state = parsed.get("state", {})
+                for k in ["name", "doctor", "reason", "date", "time", "age", "confirmation_pending"]:
+                    val = new_state.get(k)
+                    if val is None:
+                        continue
+                    if isinstance(val, bool):
+                        if k == "confirmation_pending" and state.get("confirmation_pending") is True:
+                            if val is False and not parsed.get("done"):
+                                continue
+                        state[k] = val
+                        continue
+                    if val == 0:
+                        state[k] = val
+                        continue
+                    sval = str(val).strip()
+                    if sval and sval.lower() not in {"unknown", "unk", "n/a", "na"}:
+                        state[k] = val
+                return parsed.get("response", "ಸರಿ"), state, parsed
+            except Exception as retry_err:
+                print(f"[AGENT-2-KN] JSON-fail retry also failed: {retry_err}")
+                parsed = parse_llm_json('{"response": "ಒಂದು ಕ್ಷಣ, ಮತ್ತೊಮ್ಮೆ ಹೇಳಿ.", "state": {}, "handoff": false, "done": false}')
+                return parsed.get("response", "ಒಂದು ಕ್ಷಣ, ಮತ್ತೊಮ್ಮೆ ಹೇಳಿ."), state, parsed
+
+        # ── All other errors → non-streaming fallback (existing behaviour) ──
         print(f"[AGENT-2-KN] Stream Error: {e} — Attempting non-streaming fallback...")
         try:
             non_stream_resp = await asyncio.wait_for(

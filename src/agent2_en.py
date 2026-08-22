@@ -99,6 +99,7 @@ CONSTRAINTS & RULES:
 
 ENQUIRY BEHAVIOR:
 - VOICE CONCISENESS RULE: Keep all spoken responses concise, punchy, and under 25 words (max 1-2 short sentences). Never dump full address, all timings, and full service lists in a single turn. Answer only what was specifically asked in 1-2 short sentences so audio synthesizes instantly.
+- ADDRESS RULE: NEVER read the full postal address aloud — it sounds robotic and takes too long. Instead, mention ONLY the area/landmark (e.g. "We're in BTM Layout, Bengaluru — near MCHS Colony"). If the caller needs the exact address, say "I can share the full address over SMS or Google Maps — would that help?"
 - If the question is SPECIFIC (timings, location, fees, doctor info, services), answer requested details clearly, concisely, and in complete natural sentences.
 - IF SPECIFIC TOPICS (address, timing, doctor, services, fees, location) ARE MENTIONED — even if alongside phrases like "tell me about", "inquire", or "ask about" — answer mentioned items using CLINIC INFO. Do NOT ask a vague clarifying question when specific topics are present.
 - ALWAYS speak in complete, natural, conversational sentences. Never output telegraphic fragments, bullet points, or staccato lists. Connect answers smoothly into short spoken sentences.
@@ -370,6 +371,64 @@ async def run_agent2_en(
         parsed = parse_llm_json('{"response": "Sorry, that took too long. Could you please repeat that?", "state": {}, "handoff": false, "done": false}')
         return parsed.get("response", "Sorry, please repeat that."), state, parsed
     except Exception as e:
+        err_str = str(e).lower()
+        is_json_fail = (
+            "json_validate_failed" in err_str
+            or "failed_generation" in err_str
+            or ("invalid_request_error" in err_str and "json" in err_str)
+        )
+
+        if is_json_fail:
+            # The model produced plain text instead of valid JSON.
+            # Retry ONCE: temperature=0 (deterministic) + explicit JSON instruction injected.
+            # This resolves in <2s vs the 8-key retry loop that burned 10s.
+            print(f"[AGENT-2-EN] JSON_FAIL — fast retry at temperature=0.0 with explicit JSON hint")
+            try:
+                retry_messages = messages[:-1] + [{
+                    "role": "user",
+                    "content": messages[-1]["content"] + "\n\n[SYSTEM REMINDER: Your ENTIRE response must be a single valid JSON object starting with { and ending with }. Do NOT output any text outside the JSON.]"
+                }]
+                non_stream_resp = await asyncio.wait_for(
+                    groq_client.chat.completions.create(
+                        model=LLM_MODEL,
+                        messages=retry_messages,
+                        response_format={"type": "json_object"},
+                        max_tokens=600,
+                        temperature=0.0,
+                        stream=False,
+                    ),
+                    timeout=8,
+                )
+                full_response = non_stream_resp.choices[0].message.content or ""
+                print(f"[AGENT-2-EN] RAW (json-fail retry): {full_response}")
+                parsed = parse_llm_json(full_response)
+                fallback_text = parsed.get("response", "")
+                if fallback_text and on_response_text:
+                    await on_response_text(fallback_text)
+                new_state = parsed.get("state", {})
+                for k in [
+                    "name", "doctor", "reason", "date", "time", "age",
+                    "requested_procedure", "visited_before",
+                    "doctor_advised_procedure", "confirmation_pending",
+                ]:
+                    val = new_state.get(k)
+                    if val is None:
+                        continue
+                    if isinstance(val, bool):
+                        state[k] = val
+                        continue
+                    if val == 0:
+                        state[k] = val
+                        continue
+                    if str(val).strip() and str(val).strip().lower() != "unknown":
+                        state[k] = val
+                return parsed.get("response", "Okay."), state, parsed
+            except Exception as retry_err:
+                print(f"[AGENT-2-EN] JSON-fail retry also failed: {retry_err}")
+                parsed = parse_llm_json('{"response": "One moment, could you say that once more?", "state": {}, "handoff": false, "done": false}')
+                return parsed.get("response", "One moment, could you say that once more?"), state, parsed
+
+        # ── All other errors → non-streaming fallback (existing behaviour) ──
         print(f"[AGENT-2-EN] Stream Error: {e} — Attempting non-streaming fallback...")
         try:
             non_stream_resp = await asyncio.wait_for(

@@ -16,8 +16,8 @@ async def cartesia_tts_collect(text: str, language: str = "kn") -> bytes:
     return await run_tts_collect(text, language=language)
 
 
-async def cartesia_tts_chunked(text: str, language: str = "kn", min_chunk_ms: int = 300):
-    """Async generator: yields PCM s16le 16kHz in ~300ms chunks for Vobiz streaming."""
+async def cartesia_tts_chunked(text: str, language: str = "kn", min_chunk_ms: int = 150):
+    """Async generator: yields PCM s16le 16kHz in ~150ms chunks for Vobiz streaming."""
     async for chunk in run_tts_collect_chunked(text, language=language, min_chunk_ms=min_chunk_ms):
         yield chunk
 
